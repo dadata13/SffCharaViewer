@@ -49,15 +49,22 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QFileDialog, QLabel, QPushButton, QVBoxLayout, QWidget,
-    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QListWidget, QHBoxLayout,
-    QSpinBox, QCheckBox, QDialog, QDialogButtonBox, QRadioButton, QMessageBox, QComboBox,
-    QMenuBar, QMenu, QAction, QStatusBar, QSlider
-)
-from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter, qRgb, QPen, QBrush, QTransform
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5 import QtCore
+# PyQt5のインポート（GUI機能用）
+try:
+    from PyQt5.QtWidgets import (
+        QApplication, QMainWindow, QFileDialog, QLabel, QPushButton, QVBoxLayout, QWidget,
+        QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QListWidget, QHBoxLayout,
+        QSpinBox, QCheckBox, QDialog, QDialogButtonBox, QRadioButton, QMessageBox, QComboBox,
+        QMenuBar, QMenu, QAction, QStatusBar, QSlider
+    )
+    from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter, qRgb, QPen, QBrush, QTransform
+    from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+    from PyQt5 import QtCore
+    PYQT5_AVAILABLE = True
+except ImportError:
+    PYQT5_AVAILABLE = False
+    # ヘッドレス実行時のダミークラス（必要に応じて）
+    print("[INFO] PyQt5が利用できません。ヘッドレスモードで実行します。")
 
 # 新しいモジュールのインポート
 from src.ui_components import LanguageManager, ImageCache, UIHelper, StatusBarManager
@@ -65,7 +72,18 @@ from src.air_parser import AIRParser, parse_air
 from src.sff_core import SFFParser, parse_sff
 
 from src.sff_parser import SFFv1Reader as SFFReader
-from src.sffv2_parser import SFFv2Reader as SFFV2Reader, decode_sprite_v2
+
+# SFFv2パーサーのインポート（安全なインポート）
+try:
+    from src.sffv2_parser import SFFv2Reader as SFFV2Reader, decode_sprite_v2
+except ImportError:
+    try:
+        from sffv2_parser import SFFv2Reader as SFFV2Reader, decode_sprite_v2
+    except ImportError:
+        # フォールバック: v2機能無効
+        SFFV2Reader = None
+        decode_sprite_v2 = None
+        print("[WARNING] SFFv2パーサーが利用できません。SFFv1のみサポートします。")
 
 
 @dataclass
@@ -91,8 +109,12 @@ class SFFViewerConfig:
     
     # アニメーション設定
     animation_fps: int = 60
-    auto_fit_sprite: bool = False       # スプライト選択時に自動フィット（無効化）
-    auto_fit_on_anim_start: bool = False # アニメ開始時に自動フィット（無効化）
+    auto_fit_sprite: bool = True        # スプライト選択時に自動フィット（有効化）
+    auto_fit_on_anim_start: bool = True # アニメ開始時に自動フィット（有効化）
+    
+    # キャンバス拡大設定
+    enable_canvas_scale_multiplier: bool = False  # キャンバス自動2倍拡大を無効化
+    canvas_scale_multiplier: float = 1.0         # キャンバス拡大率（1.0 = 等倍）
     
     # Clsn表示設定
     show_clsn: bool = False             # Clsn（当たり判定）表示フラグ
@@ -272,9 +294,10 @@ class SFFRenderer:
             base_w = max(self.config.default_canvas_size[0], (max_x - min_x) + self.config.canvas_margin)
             base_h = max(self.config.default_canvas_size[1], (max_y - min_y) + self.config.canvas_margin)
 
-        # ベースキャンバスサイズを2倍にする
-        base_w *= 2
-        base_h *= 2
+        # ベースキャンバスサイズの拡大処理（設定で制御）
+        if self.config.enable_canvas_scale_multiplier:
+            base_w = int(base_w * self.config.canvas_scale_multiplier)
+            base_h = int(base_h * self.config.canvas_scale_multiplier)
 
         scale = scale_factor if not original_size else 1.0
         canvas_w = int(base_w * scale)
@@ -1247,8 +1270,14 @@ class SFFViewer(QMainWindow):
         self.sprite_list.currentRowChanged.connect(self._on_sprite_selected)
         self.palette_list = QListWidget()
         self.palette_list.currentRowChanged.connect(lambda _r: self.refresh_current_sprite())
+        
+        # パレット状態表示ラベル
+        self.palette_status_label = QLabel('パレット選択: 有効')
+        self.palette_status_label.setStyleSheet("color: green; font-size: 10px;")
+        
         lists.addWidget(self.sprite_list, 1)
         lists.addWidget(self.palette_list, 1)
+        lists.addWidget(self.palette_status_label, 0)
         
         # パレットプレビュー
         self.palette_preview = QLabel('Palette')
@@ -2237,7 +2266,7 @@ class SFFViewer(QMainWindow):
         # 新しいバウンディングボックス計算を使用
         try:
             # calculate_dynamic_canvas_sizeメソッドを使用して適切なサイズを計算
-            canvas_w, canvas_h = self.calculate_dynamic_canvas_size()
+            canvas_w, canvas_h = self.calculate_dynamic_canvas_size(self.reader, 1.0, True)
             
             # 最小サイズを保証
             canvas_w = max(canvas_w, 400)
@@ -2537,6 +2566,10 @@ class SFFViewer(QMainWindow):
             print(f"[DEBUG] readerがNone - 空のキャンバス表示")
             # 何もない場合は空のキャンバスを表示
             self.show_empty_canvas()
+            # パレットUIを無効化
+            self.palette_list.setEnabled(False)
+            self.palette_status_label.setText("パレット選択: 無効 (ファイル未読み込み)")
+            self.palette_status_label.setStyleSheet("color: gray; font-size: 10px;")
             return
         
         # アニメーション中の場合
@@ -2552,9 +2585,17 @@ class SFFViewer(QMainWindow):
             print(f"[DEBUG] スプライト未選択 - 空のキャンバス表示")
             # 何も選択されていない場合は空のキャンバスを表示
             self.show_empty_canvas()
+            # パレットUIを無効化
+            self.palette_list.setEnabled(False)
+            self.palette_status_label.setText("パレット選択: 無効 (スプライト未選択)")
+            self.palette_status_label.setStyleSheet("color: gray; font-size: 10px;")
             return
             
         try:
+            # パレットUIの有効性を確認
+            should_enable_palette = self._should_enable_palette_ui(idx)
+            self._update_palette_ui_status(should_enable_palette, idx)
+            
             print(f"[DEBUG] スプライト {idx} のレンダリング開始")
             # 通常のスプライト表示時はClsnデータをクリア
             self.current_frame_data = None
@@ -2571,7 +2612,7 @@ class SFFViewer(QMainWindow):
             print(f"[DEBUG] 表示軸: ({axis_x}, {axis_y})")
             
             if self.config.debug_mode:
-                canvas_w, canvas_h = self.calculate_dynamic_canvas_size()
+                canvas_w, canvas_h = self.calculate_dynamic_canvas_size(self.reader, 1.0, True)
                 print(f"[スプライト表示] スプライト {idx}: キャンバスサイズ: {canvas_w} x {canvas_h}")
             
             print(f"[DEBUG] 画像描画開始")
@@ -2582,7 +2623,116 @@ class SFFViewer(QMainWindow):
             print(f"[DEBUG] refresh_current_sprite完了")
         except Exception as e:
             print(f"[DEBUG] refresh_current_sprite エラー: {e}")
+            import traceback; traceback.print_exc()
+            # エラー時は空のキャンバスを表示
+            self.show_empty_canvas()
+            self.palette_list.setEnabled(False)
+            self.palette_status_label.setText("パレット選択: 無効 (エラー)")
+            self.palette_status_label.setStyleSheet("color: red; font-size: 10px;")
             self._safe_set_label_text(f'表示失敗: {e}')
+
+    def _should_enable_palette_ui(self, sprite_idx):
+        """スプライトに対してパレットUIを有効にするべきかを判定"""
+        try:
+            if not self.reader or sprite_idx < 0 or sprite_idx >= len(self.reader.sprites):
+                return False
+            
+            sprite = self.reader.sprites[sprite_idx]
+            
+            if self.is_v2:
+                # SFFv2の場合
+                fmt = sprite.get('fmt', -1)
+                
+                # PNG形式（fmt=10）の場合、実際にRGBA形式かを確認
+                if fmt == 10:
+                    try:
+                        # 安全なimportとdecode処理
+                        rgba_check_result = self._check_png_rgba_format(sprite_idx)
+                        if rgba_check_result == 'rgba':
+                            print(f"[DEBUG] スプライト {sprite_idx}: PNG RGBA形式のためパレット無効")
+                            return False
+                        elif rgba_check_result == 'indexed':
+                            print(f"[DEBUG] スプライト {sprite_idx}: PNG indexed but no palette - パレット有効")
+                            return True
+                    except Exception as e:
+                        print(f"[DEBUG] スプライト {sprite_idx}: PNG判定エラー: {e}")
+                        # エラー時はパレット有効として扱う
+                        return True
+                
+                # 専用パレット（使用回数1回）の場合
+                pal_idx = sprite.get('pal_idx', 0)
+                if hasattr(self.reader, 'dedicated_palette_indices') and pal_idx in self.reader.dedicated_palette_indices:
+                    print(f"[DEBUG] スプライト {sprite_idx}: 専用パレット {pal_idx} のためパレット選択無効")
+                    return False
+                
+                # 通常のインデックス形式
+                return True
+            else:
+                # SFFv1の場合は常にパレット有効
+                return True
+                
+        except Exception as e:
+            print(f"[DEBUG] パレットUI判定エラー: {e}")
+            return True  # エラー時は有効として扱う
+
+    def _check_png_rgba_format(self, sprite_idx):
+        """PNG形式スプライトのRGBA/Indexed判定（安全版）"""
+        try:
+            # decode_sprite_v2の利用可能性チェック
+            if decode_sprite_v2 is None:
+                print(f"[DEBUG] decode_sprite_v2が利用できません")
+                return 'indexed'  # 利用不可時はindexedとして扱う
+            
+            # デコード処理
+            decoded_data, palette, w, h, mode = decode_sprite_v2(self.reader, sprite_idx)
+            
+            if mode == 'rgba':
+                return 'rgba'
+            elif mode == 'indexed':
+                return 'indexed'
+            else:
+                print(f"[DEBUG] 未知のmode: {mode}")
+                return 'indexed'  # 不明時はindexedとして扱う
+                
+        except Exception as e:
+            print(f"[DEBUG] PNG形式チェックエラー: {e}")
+            return 'indexed'  # エラー時はindexedとして扱う
+
+    def _update_palette_ui_status(self, should_enable, sprite_idx):
+        """パレットUIの状態を更新"""
+        self.palette_list.setEnabled(should_enable)
+        
+        if not should_enable:
+            # 無効化の理由を表示
+            sprite = self.reader.sprites[sprite_idx] if self.reader and sprite_idx >= 0 else None
+            if sprite:
+                fmt = sprite.get('fmt', -1)
+                pal_idx = sprite.get('pal_idx', 0)
+                
+                if self.is_v2 and fmt == 10:
+                    png_format = self._check_png_rgba_format(sprite_idx)
+                    if png_format == 'rgba':
+                        reason = "RGBA画像 (パレット不要)"
+                        self.palette_status_label.setText(f"パレット選択: 無効 ({reason})")
+                        self.palette_status_label.setStyleSheet("color: blue; font-size: 10px;")
+                        print(f"[DEBUG] スプライト {sprite_idx}: パレットUI無効化 - {reason}")
+                        return
+                
+                if (hasattr(self.reader, 'dedicated_palette_indices') and 
+                    pal_idx in self.reader.dedicated_palette_indices):
+                    reason = f"専用パレット (Pal {pal_idx})"
+                    self.palette_status_label.setText(f"パレット選択: 固定 ({reason})")
+                    self.palette_status_label.setStyleSheet("color: orange; font-size: 10px;")
+                    print(f"[DEBUG] スプライト {sprite_idx}: パレットUI固定表示 - {reason}")
+                    return
+            
+            # その他の理由
+            self.palette_status_label.setText("パレット選択: 無効")
+            self.palette_status_label.setStyleSheet("color: red; font-size: 10px;")
+        else:
+            # 有効な場合
+            self.palette_status_label.setText("パレット選択: 有効")
+            self.palette_status_label.setStyleSheet("color: green; font-size: 10px;")
     
     def display_current_animation_frame(self):
         """現在のアニメーションフレームを表示"""
@@ -2677,10 +2827,15 @@ class SFFViewer(QMainWindow):
             base_canvas_w = 600  # 空の場合は中程度のサイズ
             base_canvas_h = 450
             
-            # ベースキャンバスサイズを2倍にする
-            canvas_w = base_canvas_w * 2
-            canvas_h = base_canvas_h * 2
-            print(f"[DEBUG] 空キャンバスサイズ決定: ベース{base_canvas_w}x{base_canvas_h} → 2倍適用後{canvas_w}x{canvas_h}")
+            # ベースキャンバスサイズの拡大処理
+            if self.config.enable_canvas_scale_multiplier:
+                canvas_w = int(base_canvas_w * self.config.canvas_scale_multiplier)
+                canvas_h = int(base_canvas_h * self.config.canvas_scale_multiplier)
+                print(f"[DEBUG] 空キャンバスサイズ決定: ベース{base_canvas_w}x{base_canvas_h} → {self.config.canvas_scale_multiplier}倍適用後{canvas_w}x{canvas_h}")
+            else:
+                canvas_w = base_canvas_w
+                canvas_h = base_canvas_h
+                print(f"[DEBUG] 空キャンバスサイズ決定: {canvas_w}x{canvas_h} (拡大なし)")
             
             if self.config.debug_mode:
                 print(f"[空キャンバス] サイズ: {canvas_w}x{canvas_h}")
@@ -3065,21 +3220,37 @@ class SFFViewer(QMainWindow):
         group = sprite_info.get('group_no', 0)
         image = sprite_info.get('sprite_no', 0)
         
+        # キャッシュキーを決定 - RGBA形式の場合はパレットを無視
+        cache_palette_key = pal_idx or 0
+        if self.is_v2:
+            fmt = sprite_info.get('fmt', -1)
+            if fmt == 10:  # PNG形式の場合、RGBA判定してキーを調整
+                try:
+                    if decode_sprite_v2 is not None:
+                        # 簡易チェック用に一度デコード（結果はキャッシュされる）
+                        decoded_data, palette, w, h, mode = decode_sprite_v2(self.reader, index)
+                        if mode == 'rgba':
+                            cache_palette_key = -1  # RGBA形式の場合は固定キーを使用
+                            if self.config.debug_mode:
+                                print(f"[Cache] スプライト {index}: RGBA形式のためパレットキー無視")
+                except Exception:
+                    pass  # エラー時は通常のキーを使用
+        
         # キャッシュから取得を試行
-        cached_result = self.image_cache.get(group, image, pal_idx or 0)
+        cached_result = self.image_cache.get(group, image, cache_palette_key)
         if cached_result is not None:
             if self.config.debug_mode:
-                print(f"[Cache HIT] Group:{group}, Image:{image}, Palette:{pal_idx}")
+                print(f"[Cache HIT] Group:{group}, Image:{image}, Palette:{cache_palette_key}")
             return cached_result
         
         # キャッシュになければレンダリング
         if self.config.debug_mode:
-            print(f"[Cache MISS] Group:{group}, Image:{image}, Palette:{pal_idx}")
+            print(f"[Cache MISS] Group:{group}, Image:{image}, Palette:{cache_palette_key}")
             
         result = self.renderer.render_sprite(self.reader, index, pal_idx, self.is_v2, self.act_palettes)
         
         # キャッシュに保存
-        self.image_cache.put(group, image, pal_idx or 0, result)
+        self.image_cache.put(group, image, cache_palette_key, result)
         
         # ステータス更新
         if hasattr(self, 'status_bar_manager'):
@@ -5206,7 +5377,7 @@ class SFFViewer(QMainWindow):
         img_data = sprite.get('image_data')
         width = sprite.get('width', 0)
         height = sprite.get('height', 0)
-        fmt = sprite.get('format', -1)
+        fmt = sprite.get('fmt', -1)
         offset = sprite.get('offset', 0)
         length = sprite.get('length', 0)
         
@@ -5214,14 +5385,17 @@ class SFFViewer(QMainWindow):
         if self.is_v2 and img_data is None and width > 0 and height > 0:
             try:
                 # SFFv2の遅延読み込みを試行
-                from sffv2_parser import decode_sprite_v2
-                with open(self.reader.file_path, 'rb') as f:
+                if decode_sprite_v2 is not None:
                     decoded_data, palette, w, h, mode = decode_sprite_v2(self.reader, sprite_idx)
                     if decoded_data and w > 0 and h > 0:
                         print(f"[render_sprite_raw] スプライト {sprite_idx}: SFFv2遅延読み込み成功 ({w}x{h})")
-                        # decode_sprite_v2の結果から画像を作成
-                        # ここでは成功として扱い、既存のrender_spriteに処理を委譲
-                        pass
+                        # decode_sprite_v2の結果から直接QImageを作成
+                        qimg = self._create_qimage_from_decoded(decoded_data, palette, w, h, mode)
+                        if qimg is not None:
+                            print(f"[render_sprite_raw] スプライト {sprite_idx}: QImage作成成功")
+                            return qimg, None
+                else:
+                    print(f"[render_sprite_raw] スプライト {sprite_idx}: decode_sprite_v2が利用できません")
             except Exception as e:
                 print(f"[render_sprite_raw] スプライト {sprite_idx}: SFFv2遅延読み込み失敗: {e}")
         
@@ -5230,7 +5404,13 @@ class SFFViewer(QMainWindow):
             print(f"[render_sprite_raw] スプライト {sprite_idx}: 無効データ詳細")
             print(f"  - image_data: {type(img_data)} (長さ: {len(img_data) if img_data else 0})")
             print(f"  - サイズ: {width}x{height}")
-            print(f"  - フォーマット: {fmt}")
+            # リンクフレームの場合はリンク先fmtも表示
+            link_idx = sprite.get('link_idx', None)
+            if link_idx is not None and 0 <= link_idx < len(self.reader.sprites):
+                link_fmt = self.reader.sprites[link_idx].get('fmt', -1)
+                print(f"  - フォーマット: {fmt} (リンク先: {link_fmt})")
+            else:
+                print(f"  - フォーマット: {fmt}")
             print(f"  - オフセット: {offset}, 長さ: {length}")
             
             # 無効データの理由を分析
@@ -5260,7 +5440,7 @@ class SFFViewer(QMainWindow):
                 # 無効なデータの場合はプレースホルダー画像を作成
                 placeholder_img = self._create_placeholder_image(max(32, width), max(32, height), f"SP{sprite_idx}")
                 return placeholder_img, None
-        
+ 
         # まず既存のrender_spriteメソッドを試行
         try:
             qimg, _ = self.render_sprite(sprite_idx)
@@ -5285,6 +5465,94 @@ class SFFViewer(QMainWindow):
         print(f"[render_sprite_raw] スプライト {sprite_idx}: 全レンダリング失敗、プレースホルダー作成")
         return self._create_placeholder_image(width, height, f"ERR{sprite_idx}"), None
 
+    def _create_qimage_from_decoded(self, decoded_data, palette, width, height, mode):
+        """decode_sprite_v2の結果からQImageを作成"""
+        try:
+            if mode == 'rgba':
+                # RGBA形式の場合
+                img = QImage(width, height, QImage.Format_RGBA8888)
+                stride = img.bytesPerLine()
+                row_bytes = width * 4
+                
+                try:
+                    ptr = img.bits()
+                    ptr.setsize(stride * height)
+                    mv = memoryview(ptr)
+                    
+                    if stride == row_bytes:
+                        mv[:row_bytes * height] = decoded_data[:row_bytes * height]
+                    else:
+                        for y in range(height):
+                            src_off = y * row_bytes
+                            dst_off = y * stride
+                            mv[dst_off:dst_off+row_bytes] = decoded_data[src_off:src_off+row_bytes]
+                    return img
+                except Exception as e:
+                    print(f"[create_qimage] RGBA memoryview失敗、fallback: {e}")
+                    # フォールバック: 手動設定
+                    img = QImage(bytes(decoded_data[:width*height*4]), width, height, QImage.Format_RGBA8888)
+                    return img
+                    
+            else:
+                # インデックス形式の場合
+                img = QImage(width, height, QImage.Format_Indexed8)
+                
+                if palette:
+                    color_table = []
+                    for r, g, b, a in palette:
+                        color_table.append(QColor(r, g, b, a).rgba())
+                    img.setColorTable(color_table)
+                
+                stride = img.bytesPerLine()
+                try:
+                    ptr = img.bits()
+                    ptr.setsize(stride * height)
+                    mv = memoryview(ptr)
+                    
+                    if stride == width:
+                        mv[:width*height] = decoded_data[:width*height]
+                    else:
+                        for y in range(height):
+                            src_off = y * width
+                            dst_off = y * stride
+                            mv[dst_off:dst_off+width] = decoded_data[src_off:src_off+width]
+                    return img
+                except Exception as e:
+                    print(f"[create_qimage] インデックス memoryview失敗、RGBA fallback: {e}")
+                    # RGBAフォールバック
+                    rgba = bytearray()
+                    for i in decoded_data[:width*height]:
+                        if palette and 0 <= i < len(palette):
+                            r, g, b, a = palette[i]
+                        else:
+                            r = g = b = 0; a = 0
+                        rgba.extend([r, g, b, a])
+                    
+                    img_rgba = QImage(width, height, QImage.Format_RGBA8888)
+                    stride_rgba = img_rgba.bytesPerLine()
+                    row_bytes_rgba = width * 4
+                    
+                    try:
+                        ptr_rgba = img_rgba.bits()
+                        ptr_rgba.setsize(stride_rgba * height)
+                        mv_rgba = memoryview(ptr_rgba)
+                        
+                        if stride_rgba == row_bytes_rgba:
+                            mv_rgba[:row_bytes_rgba * height] = rgba[:row_bytes_rgba * height]
+                        else:
+                            for y in range(height):
+                                src_off = y * row_bytes_rgba
+                                dst_off = y * stride_rgba
+                                mv_rgba[dst_off:dst_off+row_bytes_rgba] = rgba[src_off:src_off+row_bytes_rgba]
+                        return img_rgba
+                    except Exception as e2:
+                        print(f"[create_qimage] RGBA fallback失敗: {e2}")
+                        return None
+                        
+        except Exception as e:
+            print(f"[create_qimage] 全般エラー: {e}")
+            return None
+
     def _direct_render_sprite(self, sprite_idx):
         """スプライトを直接レンダリング（バックアップ方式）"""
         sprite = self.reader.sprites[sprite_idx]
@@ -5300,8 +5568,15 @@ class SFFViewer(QMainWindow):
         # フォーマットに応じた処理
         if fmt in [0, 1]:  # インデックスカラー
             return self._render_indexed_sprite(sprite_idx, sprite, img_data, width, height)
-        elif fmt in [2, 3, 4, 10, 11, 12]:  # 直接色
+        elif fmt in [2, 3, 4, 11, 12]:  # 直接色（PNG fmt=10は除外）
             return self._render_direct_sprite(sprite_idx, sprite, img_data, width, height, fmt)
+        elif fmt == 10:  # PNG形式 - SFFv2では遅延読み込みに委譲
+            if self.is_v2:
+                print(f"[direct_render] PNG形式(fmt=10)はSFFv2遅延読み込みで処理済み")
+                return None  # 遅延読み込みで処理されるべき
+            else:
+                # SFFv1の場合は直接色として処理
+                return self._render_direct_sprite(sprite_idx, sprite, img_data, width, height, fmt)
         else:
             print(f"[direct_render] 未対応フォーマット: {fmt}")
             return None
@@ -5309,18 +5584,34 @@ class SFFViewer(QMainWindow):
     def _render_indexed_sprite(self, sprite_idx, sprite, img_data, width, height):
         """インデックスカラースプライトのレンダリング"""
         try:
-            # パレット取得
-            pal_group = sprite.get('pal_group', 1)
-            pal_item = sprite.get('pal_item', 0)
-            pal_key = (pal_group, pal_item)
-            
-            if pal_key in self.reader.palettes:
-                palette = self.reader.palettes[pal_key]
+            # SFFv2の場合は専用のパレット取得方法を使用
+            if self.is_v2:
+                pal_idx = sprite.get('pal_idx', 0)
+                if 0 <= pal_idx < len(self.reader.palettes):
+                    palette_data = self.reader.palettes[pal_idx]
+                    palette = []
+                    for r, g, b, a in palette_data:
+                        palette.extend([r, g, b])
+                    print(f"[indexed_render] SFFv2パレット {pal_idx} を使用")
+                else:
+                    print(f"[indexed_render] SFFv2: 無効なパレットインデックス {pal_idx}")
+                    # デフォルトパレット（グレースケール）
+                    palette = []
+                    for i in range(256):
+                        palette.extend([i, i, i])
             else:
-                # デフォルトパレット（グレースケール）
-                palette = []
-                for i in range(256):
-                    palette.extend([i, i, i])
+                # SFFv1の場合の既存処理
+                pal_group = sprite.get('pal_group', 1)
+                pal_item = sprite.get('pal_item', 0)
+                pal_key = (pal_group, pal_item)
+                
+                if pal_key in self.reader.palettes:
+                    palette = self.reader.palettes[pal_key]
+                else:
+                    # デフォルトパレット（グレースケール）
+                    palette = []
+                    for i in range(256):
+                        palette.extend([i, i, i])
             
             # QImageを作成（インデックスカラー）
             qimg = QImage(width, height, QImage.Format_Indexed8)
