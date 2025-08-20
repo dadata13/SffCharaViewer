@@ -2775,6 +2775,12 @@ class SFFViewer(QMainWindow):
             
             if sprite_idx is not None:
                 print(f"[DEBUG] アニメーション - スプライト {sprite_idx} をレンダリング")
+                
+                # パレットUIの有効性を確認・更新
+                should_enable_palette = self._should_enable_palette_ui(sprite_idx)
+                self._update_palette_ui_status(should_enable_palette, sprite_idx)
+                
+                # パレット選択を考慮してレンダリング
                 qimg, palette = self.render_sprite(sprite_idx)
                 print(f"[DEBUG] アニメーション - レンダリング完了: 画像={qimg is not None}, パレット={palette is not None}")
                 
@@ -2808,6 +2814,10 @@ class SFFViewer(QMainWindow):
                 # スプライトが見つからない場合は判定データをクリアして空のキャンバスを表示
                 self.current_frame_data = None
                 self.show_empty_canvas()
+                # パレットUIを無効化
+                self.palette_list.setEnabled(False)
+                self.palette_status_label.setText("パレット選択: 無効 (スプライト見つからず)")
+                self.palette_status_label.setStyleSheet("color: gray; font-size: 10px;")
             
         except Exception as e:
             print(f"[DEBUG] refresh_current_sprite エラー: {e}")
@@ -2817,6 +2827,10 @@ class SFFViewer(QMainWindow):
             # エラー時は判定データをクリアして空のキャンバスを表示
             self.current_frame_data = None
             self.show_empty_canvas()
+            # パレットUIを無効化
+            self.palette_list.setEnabled(False)
+            self.palette_status_label.setText("パレット選択: 無効 (エラー)")
+            self.palette_status_label.setStyleSheet("color: gray; font-size: 10px;")
     
     def show_empty_canvas(self):
         """空のキャンバスを表示（適応サイズ版）"""
