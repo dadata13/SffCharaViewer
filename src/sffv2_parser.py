@@ -375,6 +375,10 @@ def decode_sprite(fmt, data, width, height):
         debug_print(f"[DEBUG] Data header: {' '.join(f'{b:02x}' for b in data[:16])}")
     
     try:
+        # 初期化
+        decoded = None
+        mode = 'indexed'
+        
         # PNG形式の場合（fmt=10 かつ 署名で確認）
         if fmt == 10:
             debug_print(f"[DEBUG] fmt=10 detected, checking PNG signature...")
@@ -384,7 +388,8 @@ def decode_sprite(fmt, data, width, height):
                 return decoded, mode
             else:
                 debug_print(f"[WARNING] fmt=10 but invalid PNG signature, treating as unknown format")
-                # PNG署名がない場合は他の形式として処理
+                # PNG署名がない場合は空データとして処理
+                decoded = bytearray([0] * width * height)
         
         # 署名による自動PNG検出（fmt=10以外でも）
         elif is_png_data(data):
@@ -445,6 +450,13 @@ def decode_sprite(fmt, data, width, height):
         debug_print(f"[ERROR] decode_sprite failed: {e}")
         # フォールバック: 透明な画像を作成
         decoded = bytearray([0] * width * height)
+        mode = 'indexed'
+    
+    # decoded変数の確認（安全性のため）
+    if decoded is None:
+        debug_print(f"[ERROR] decoded is None, creating fallback data")
+        decoded = bytearray([0] * width * height)
+        mode = 'indexed'
     
     # モード判定
     if len(decoded) == width * height * 4:
