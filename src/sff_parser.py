@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import struct
 import json
@@ -56,14 +57,14 @@ def extract_palette_from_pcx_data(data):
     return None
 
 def reverse_act_palette(palette):
-    """ACTパレットを反転させる関数"""
+    """ACTパレットを反転させる関数（SFFv1専用）"""
     if len(palette) < 768:
         return palette
     reversed_palette = []
     for i in range(255, -1, -1):
         idx = i * 3
         if idx + 2 < len(palette):
-            # BGR → RGB変換を行う
+            # BGR → RGB変換を行う（SFFv1のACTパレット用）
             b = palette[idx]
             g = palette[idx + 1]
             r = palette[idx + 2]
@@ -71,6 +72,16 @@ def reverse_act_palette(palette):
         else:
             reversed_palette.extend([0, 0, 0])
     return reversed_palette
+
+def normalize_sffv2_palette(palette):
+    """SFFv2パレットを正規化する関数（順序反転なし、RGB順序維持）"""
+    if len(palette) < 768:
+        # 足りない部分を0で埋める
+        normalized = list(palette)
+        while len(normalized) < 768:
+            normalized.append(0)
+        return normalized
+    return list(palette[:768])  # 768バイト（256色×3）に制限
 
 def convert_pcx_to_image(pcx_data, palette_data=None):
     try:

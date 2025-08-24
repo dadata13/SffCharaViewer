@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """SffCharaViewer.py (Enhanced Modular Version)
 
 SffCharaViewer - 格闘ゲーム用スプライトファイル(.sff)とアニメーション(.air)のビューア
@@ -57,7 +58,7 @@ try:
         QSpinBox, QCheckBox, QDialog, QDialogButtonBox, QRadioButton, QMessageBox, QComboBox,
         QMenuBar, QMenu, QAction, QStatusBar, QSlider
     )
-    from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter, qRgb, QPen, QBrush, QTransform
+    from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter, qRgb, qRgba, QPen, QBrush, QTransform
     from PyQt5.QtCore import Qt, QTimer, pyqtSignal
     from PyQt5 import QtCore
     PYQT5_AVAILABLE = True
@@ -75,10 +76,10 @@ from src.sff_parser import SFFv1Reader as SFFReader
 
 # SFFv2パーサーのインポート（安全なインポート）
 try:
-    from src.sffv2_parser import SFFv2Reader as SFFV2Reader, decode_sprite_v2
+    from src.sffv2_parser import SFFv2Reader as SFFV2Reader, decode_sprite_v2, debug_print
 except ImportError:
     try:
-        from sffv2_parser import SFFv2Reader as SFFV2Reader, decode_sprite_v2
+        from sffv2_parser import SFFv2Reader as SFFV2Reader, decode_sprite_v2, debug_print
     except ImportError:
         # フォールバック: v2機能無効
         SFFV2Reader = None
@@ -98,7 +99,7 @@ class SFFViewerConfig:
     # 表示設定
     default_scale: float = 2.0
     min_scale: int = 25
-    max_scale: int = 500
+    max_scale: int = 1000
     
     # キャンバス設定
     canvas_margin: int = 4          # 余白をさらに小さく
@@ -128,7 +129,7 @@ class SFFViewerConfig:
     canvas_inner_margin_px: float = 0.0  # キャンバス内部余白（ピクセル）
     
     # デバッグ設定
-    debug_mode: bool = True
+    debug_mode: bool = False
 
 
 # 設定エイリアス
@@ -144,9 +145,22 @@ class SFFRenderer:
     def render_sprite(self, reader, index: int, palette_idx: Optional[int] = None, 
                      is_v2: bool = False, act_palettes: Optional[List] = None) -> Tuple[QImage, List[Tuple[int,int,int,int]]]:
         """スプライトをQImageにレンダリング"""
+        if self.config.debug_mode:
+
+            pass
+        
         if is_v2:
             pal_idx = palette_idx if palette_idx is not None and palette_idx >= 0 else None
             decoded, palette, w, h, mode = decode_sprite_v2(reader, index, palette_override=pal_idx)
+            
+            # RLE8形式の特別なデバッグ (削除済み)
+            sprite = reader.sprites[index] if reader and index >= 0 else None
+            is_rle8 = sprite and sprite.get('fmt') == 2
+            if is_rle8:
+                pass  # debug output removed
+            
+            if self.config.debug_mode:
+                pass  # debug output removed
         else:
             s = reader.sprites[index]
             
@@ -156,9 +170,9 @@ class SFFRenderer:
                 act_palettes is not None and palette_idx - 1 < len(act_palettes)):
                 # ACTパレットを使用（palette_idx - 1 because 0 is SFF's own palette）
                 palette_override = act_palettes[palette_idx - 1]
-                print(f"[DEBUG] Using ACT palette {palette_idx - 1}: first color {palette_override[0]}, last color {palette_override[-1]}")
+                pass  # debug output removed
             elif palette_idx is not None and palette_idx >= 1:
-                print(f"[DEBUG] ACT palette requested (idx={palette_idx}) but not available (has_act_palettes={act_palettes is not None}, count={len(act_palettes) if act_palettes else 0})")
+                pass  # debug output removed
             
             # SFFv1でもパレットオーバーライドを使用
             decoded, palette, w, h = reader.get_image(index, s.get('pal_idx', 0), palette_override=palette_override)
@@ -166,8 +180,50 @@ class SFFRenderer:
         
         return self._create_qimage(decoded, palette, w, h, mode)
     
+    def _qimage_from_indexed(self, indices: bytes, palette: list[tuple[int,int,int]], w: int, h: int, transparent_zero: bool) -> QImage:
+        """インデックスデータからARGB32形式のQImageを作成（透過対応）"""
+        # indices: 長さ w*h の 0..255
+        # palette: [(r,g,b), ...] 256 個想定
+        # Debug output removed
+        
+        # インデックス統計 (デバッグ情報削除済み)
+        unique_indices = set(indices)
+        
+        # パレット情報 (デバッグ情報削除済み)
+        
+        argb = bytearray(w * h * 4)
+        p0a = 0 if transparent_zero else 255
+        
+        transparent_count = 0
+        for y in range(h):
+            base = y * w
+            for x in range(w):
+                idx = indices[base + x]
+                if idx < len(palette):
+                    r, g, b = palette[idx][:3]  # パレットが4要素の場合も対応
+                else:
+                    r, g, b = 0, 0, 0  # 範囲外は黒
+                a = p0a if idx == 0 else 255
+                if idx == 0 and transparent_zero:
+                    transparent_count += 1
+                o = (base + x) * 4
+                argb[o+0] = b
+                argb[o+1] = g
+                argb[o+2] = r
+                argb[o+3] = a
+        
+        # Debug output removed
+        
+        img = QImage(bytes(argb), w, h, w*4, QImage.Format_ARGB32)
+        # Debug output removed
+        
+        # デバッグ用スプライト保存機能は削除済み
+        
+        return img
+    
     def _create_qimage(self, decoded, palette, w: int, h: int, mode: str) -> Tuple[QImage, List[Tuple[int,int,int,int]]]:
         """デコードされたデータからQImageを作成"""
+        
         if mode == 'rgba':
             img = QImage(w, h, QImage.Format_RGBA8888)
             stride = img.bytesPerLine()
@@ -187,44 +243,31 @@ class SFFRenderer:
                     logging.warning(f"RGBA copy fallback (stride issue): {e}")
                 img = QImage(bytes(decoded[:w*h*4]), w, h, QImage.Format_RGBA8888)
         else:
-            img = QImage(w, h, QImage.Format_Indexed8)
-            table = [QColor(r,g,b,a).rgba() for (r,g,b,a) in palette]
-            img.setColorTable(table)
-            stride = img.bytesPerLine()
-            try:
-                ptr = img.bits(); ptr.setsize(stride * h)
-                mv = memoryview(ptr)
-                if stride == w:
-                    mv[:w*h] = decoded[:w*h]
-                else:
-                    for y in range(h):
-                        src_off = y * w
-                        dst_off = y * stride
-                        mv[dst_off:dst_off+w] = decoded[src_off:src_off+w]
-            except Exception as e:
-                if self.config.debug_mode:
-                    logging.warning(f"Indexed8 stride copy failed -> RGBA fallback: {e}")
-                # RGBA fallbackの実装
-                rgba = bytearray()
-                for i in decoded[:w*h]:
-                    if 0 <= i < len(palette):
-                        r,g,b,a = palette[i]
-                    else:
-                        r=g=b=0; a=0
-                    rgba.extend([r,g,b,a])
-                img = QImage(w, h, QImage.Format_RGBA8888)
-                stride2 = img.bytesPerLine(); row_bytes2 = w*4
-                try:
-                    ptr2 = img.bits(); ptr2.setsize(stride2*h)
-                    mv2 = memoryview(ptr2)
-                    if stride2 == row_bytes2:
-                        mv2[:row_bytes2*h] = rgba[:row_bytes2*h]
-                    else:
-                        for y in range(h):
-                            so = y*row_bytes2; do = y*stride2
-                            mv2[do:do+row_bytes2] = rgba[so:so+row_bytes2]
-                except: pass
-        
+            # ★改良されたインデックス画像作成（ARGB32直書きで確実な透過処理）
+            # Format_Indexed8はα値を無視する環境があるため、ARGB32で直接描画
+            transparent_zero = True  # SFFでは通常インデックス0を透明とする
+            
+            if self.config.debug_mode:
+
+                # インデックスデータの分析
+                non_zero_indices = sum(1 for x in decoded[:w*h] if x != 0)
+                unique_indices = len(set(decoded[:w*h]))
+
+                
+                # データパターンの詳細分析
+                data_sample = decoded[:min(20, len(decoded))]
+
+                
+                # 横縞パターンチェック
+                if w > 0 and h > 1:
+                    first_row = decoded[:w]
+                    second_row = decoded[w:2*w] if len(decoded) >= 2*w else []
+                    if len(second_row) == w:
+                        is_stripe = all(first_row[i] == second_row[i] for i in range(w))
+
+            
+            img = self._qimage_from_indexed(bytes(decoded[:w*h]), palette, w, h, transparent_zero)
+                
         return img, palette
     
     def remove_alpha(self, qimg: QImage) -> QImage:
@@ -769,11 +812,6 @@ class DEFParser:
                 palette.reverse()
                 
                 # ACTパレットの最初の数色をデバッグ出力
-                print(f"[DEBUG] ACT palette loaded from {path}")
-                print(f"[DEBUG] ACT palette first 5 colors: {palette[:5]}")
-                print(f"[DEBUG] ACT palette last 5 colors: {palette[-5:]}")
-                print(f"[DEBUG] ACT palette file size: {len(data)} bytes")
-                print(f"[DEBUG] Palette order reversed")
                 
                 return palette
         except Exception as e:
@@ -903,7 +941,7 @@ class ImageWindow(QMainWindow):
                 font-size: 10px;
             }
         """)
-        self.anim_info_label.setText("アニメーション情報: (アニメーションが選択されていません)")
+        self.anim_info_label.setText(self.language_manager.get_text('anim_info_default'))
         layout.addWidget(self.anim_info_label)
         
         self.setCentralWidget(main_widget)
@@ -966,7 +1004,7 @@ class ImageWindow(QMainWindow):
             if lang_mgr:
                 info_text = lang_mgr.get_text('anim_info_default')
             else:
-                info_text = "アニメーション情報: (アニメーションが選択されていません)"
+                info_text = self.language_manager.get_text('anim_info_default')
         
         UIHelper.safe_set_label_text(self.anim_info_label, info_text)
 
@@ -975,7 +1013,7 @@ class ImageWindow(QMainWindow):
         if hasattr(self, 'language_manager') and self.language_manager:
             text = self.language_manager.get_text('anim_info_default')
         else:
-            text = "アニメーション情報: (アニメーションが選択されていません)"
+            text = self.language_manager.get_text('anim_info_default')
         UIHelper.safe_set_label_text(self.anim_info_label, text)
 
     def closeEvent(self, e):
@@ -1052,6 +1090,11 @@ class SFFViewer(QMainWindow):
         
         # ビュー中央配置制御
         self._view_centered_after_scaling = False
+        
+        # パレット選択状態の記録
+        self._last_shared_palette_row = 0  # 最後に選択した共有パレットの行
+        self._is_dedicated_palette_active = False  # 現在専用パレットが適用されているか
+        self._user_selected_palette = False  # ユーザーが手動でパレットを選択したか
         
         # フィット関連
         self.original_size = False
@@ -1176,18 +1219,21 @@ class SFFViewer(QMainWindow):
         
         # 段階的スケール選択
         self.scale_combo = QComboBox()
-        self.scale_values = [25, 50, 75, 100, 125, 150, 175, 200, 250, 300, 400, 500]
+        self.scale_values = [25, 50, 75, 100, 125, 150, 175, 200, 250, 300, 400, 500, 600, 800, 1000]
+        print(f"[初期化] スケール値配列: {self.scale_values}")
         for value in self.scale_values:
             self.scale_combo.addItem(f'{value}%')
         
         # デフォルト値を設定（100%に最も近い値）
         default_scale_percent = int(self.config.default_scale * 100)
+        print(f"[初期化] デフォルトスケール: {default_scale_percent}%")
         if default_scale_percent in self.scale_values:
             default_index = self.scale_values.index(default_scale_percent)
         else:
             # 最も近い値を見つける
             default_index = min(range(len(self.scale_values)), 
                               key=lambda i: abs(self.scale_values[i] - default_scale_percent))
+        print(f"[初期化] 選択されたインデックス: {default_index}, 値: {self.scale_values[default_index]}%")
         self.scale_combo.setCurrentIndex(default_index)
         self.scale_combo.currentIndexChanged.connect(self.on_scale_combo_changed)
         opt.addWidget(self.scale_combo)
@@ -1269,10 +1315,10 @@ class SFFViewer(QMainWindow):
         self.sprite_list = QListWidget()
         self.sprite_list.currentRowChanged.connect(self._on_sprite_selected)
         self.palette_list = QListWidget()
-        self.palette_list.currentRowChanged.connect(lambda _r: self.refresh_current_sprite())
+        self.palette_list.currentRowChanged.connect(self._on_palette_selected)
         
         # パレット状態表示ラベル
-        self.palette_status_label = QLabel('パレット選択: 有効')
+        self.palette_status_label = QLabel(self.language_manager.get_text('palette_selection_enabled'))
         self.palette_status_label.setStyleSheet("color: green; font-size: 10px;")
         
         lists.addWidget(self.sprite_list, 1)
@@ -1489,6 +1535,9 @@ class SFFViewer(QMainWindow):
     
     def _on_sprite_selected(self, row: int):
         """スプライト選択時の処理"""
+        # ユーザーパレット選択フラグをリセット（新しいスプライトでは自動適用を許可）
+        self._user_selected_palette = False
+        
         # アニメーションを停止
         self.stop_animation()
         
@@ -1525,7 +1574,7 @@ class SFFViewer(QMainWindow):
     # パブリック API メソッド
     def clear_previous_file_data(self):
         """前のファイルのデータを完全にクリアする"""
-        print("[DEBUG] 前のファイルデータをクリア中...")
+
         
         # アニメーション関連データをクリア
         self.animations = {}
@@ -1578,7 +1627,7 @@ class SFFViewer(QMainWindow):
         if hasattr(self, 'status_bar_manager'):
             self.status_bar_manager.clear_status()
         
-        print("[DEBUG] 前のファイルデータクリア完了")
+
 
     def load_sff_file(self, path: str) -> bool:
         """SFFファイルを読み込む
@@ -1625,9 +1674,7 @@ class SFFViewer(QMainWindow):
             base_dir = os.path.dirname(path)
             sff_name = os.path.splitext(os.path.basename(path))[0]
             
-            print(f"[DEBUG] SFF読み込み: {path}")
-            print(f"[DEBUG] Base dir: {base_dir}")
-            print(f"[DEBUG] SFF name: {sff_name}")
+
             
             # 同名のDEFファイルを探す
             potential_def_files = [
@@ -1635,55 +1682,47 @@ class SFFViewer(QMainWindow):
                 # キャラクター名が異なる場合もあるので、ディレクトリ内の全DEFファイルをチェック
             ]
             
-            print(f"[DEBUG] 最初の候補DEF: {potential_def_files[0]}")
+
             
             # ディレクトリ内の全DEFファイルも候補に追加
             if os.path.exists(base_dir):
-                print(f"[DEBUG] ディレクトリ存在確認OK: {base_dir}")
                 for file in os.listdir(base_dir):
                     if file.lower().endswith('.def'):
                         def_path = os.path.join(base_dir, file)
                         if def_path not in potential_def_files:
                             potential_def_files.append(def_path)
-                            print(f"[DEBUG] DEFファイル候補に追加: {def_path}")
-            
-            print(f"[DEBUG] 全DEF候補: {potential_def_files}")
             
             # DEFファイルからACTパレットを読み込み
             def_found = False
             for def_path in potential_def_files:
-                print(f"[DEBUG] DEFファイルを検査中: {def_path}")
                 if os.path.exists(def_path):
                     try:
-                        print(f"[DEBUG] DEFファイル存在確認OK: {def_path}")
                         # DEFファイルが指定するSFFファイルが現在読み込み中のSFFファイルと一致するかチェック
                         sff_raw, _, _, _ = DEFParser.parse_def(def_path)
-                        print(f"[DEBUG] DEFファイル内のSFF指定: {sff_raw}")
                         if sff_raw:
                             expected_sff_path = DEFParser.resolve_asset_path(base_dir, sff_raw)
-                            print(f"[DEBUG] 解決されたSFFパス: {expected_sff_path}")
-                            print(f"[DEBUG] 現在のSFFパス: {path}")
                             if expected_sff_path and os.path.samefile(expected_sff_path, path):
-                                print(f"[DEBUG] SFF読み込み時にDEFファイルを発見: {def_path}")
                                 self._load_act_palettes_from_def(def_path, base_dir)
                                 def_found = True
                                 break
                             else:
-                                print(f"[DEBUG] SFFパスが一致しません")
+                                pass
+
                     except Exception as e:
-                        print(f"[DEBUG] DEFファイル {def_path} の解析に失敗: {e}")
+
                         continue
                 else:
-                    print(f"[DEBUG] DEFファイルが存在しません: {def_path}")
+                    pass
             
             if not def_found and self.config.debug_mode:
-                print(f"[DEBUG] SFFファイル {path} に対応するDEFファイルが見つかりませんでした")
+                pass
+
             
             self._load_sff_internal(path)
             self.file_loaded.emit(path)
             
             # ファイル読み込み完了後に自動スケーリングを実行
-            print(f"[DEBUG] SFFファイル読み込み完了 - 自動スケーリング実行")
+
             self._auto_scale_to_fit()
             
             # ファイル履歴に追加
@@ -1756,22 +1795,9 @@ class SFFViewer(QMainWindow):
             self._load_sff_internal(sff_path)
             
             if air_path:
-                print(f"[DEBUG] AIRファイル読み込み開始: {air_path}")
+
                 self.animations = parse_air(air_path)
-                print(f"[DEBUG] AIRファイル読み込み完了: {len(self.animations)}個のアニメーション")
-                
-                # 各アニメーションの詳細をデバッグ出力
-                for anim_no, frames in list(self.animations.items())[:3]:  # 最初の3つだけ
-                    print(f"[DEBUG] アニメ{anim_no}: {len(frames)}フレーム")
-                    for i, frame in enumerate(frames[:2]):  # 最初の2フレームだけ
-                        clsn1_count = len(frame.get('clsn1', []))
-                        clsn2_count = len(frame.get('clsn2', []))
-                        print(f"[DEBUG]   フレーム{i}: group={frame.get('group')}, image={frame.get('image')}, clsn1={clsn1_count}, clsn2={clsn2_count}")
-                        if clsn1_count > 0:
-                            print(f"[DEBUG]     clsn1: {frame.get('clsn1')}")
-                        if clsn2_count > 0:
-                            print(f"[DEBUG]     clsn2: {frame.get('clsn2')}")
-                
+
                 self.populate_animations()
                 if self.animations:
                     self.start_animation(self._anim_no_list[0])
@@ -1779,7 +1805,7 @@ class SFFViewer(QMainWindow):
             self.file_loaded.emit(path)
             
             # ファイル読み込み完了後に自動スケーリングを実行
-            print(f"[DEBUG] DEFファイル読み込み完了 - 自動スケーリング実行")
+
             self._auto_scale_to_fit()
             
             # ファイル履歴に追加
@@ -1907,7 +1933,7 @@ class SFFViewer(QMainWindow):
             self.saved_view_transform = self._anim_view_transform
             self.saved_h_scroll = self._anim_h_scroll  
             self.saved_v_scroll = self._anim_v_scroll
-            print(f"[DEBUG] アニメーション停止 - 固定状態を通常状態として保存: h_scroll={self._anim_h_scroll}, v_scroll={self._anim_v_scroll}")
+
         
         # アニメーション固定状態をクリア
         self._anim_view_transform = None
@@ -1917,7 +1943,6 @@ class SFFViewer(QMainWindow):
     def clear_render_cache(self):
         """レンダリングキャッシュをクリア"""
         self.render_cache.clear()
-        print(f"[DEBUG] レンダリングキャッシュクリア")
     
     def pause_animation(self):
         """アニメーション一時停止/再開"""
@@ -1933,68 +1958,58 @@ class SFFViewer(QMainWindow):
         
         # DEFファイルからパレット情報を取得
         palette_files = DEFParser.parse_def_palettes(def_path)
-        print(f"[DEBUG] Found {len(palette_files)} palette files in DEF: {palette_files}")
         
         for pal_file in palette_files:
             pal_path = DEFParser.resolve_asset_path(base_dir, pal_file)
-            print(f"[DEBUG] Processing palette file: {pal_file} -> {pal_path}")
             if pal_path:
                 palette = DEFParser.load_act_palette(pal_path)
                 if palette:
                     self.act_palettes.append(palette)
                     self.act_palette_names.append(os.path.basename(pal_file))
-                    print(f"[DEBUG] Successfully loaded ACT palette: {pal_file} (first color: {palette[0]}, last color: {palette[-1]})")
                     if self.config.debug_mode:
                         print(f"[DEF] Loaded ACT palette: {pal_file}")
-                else:
-                    print(f"[DEBUG] Failed to load ACT palette: {pal_file}")
-            else:
-                print(f"[DEBUG] Could not resolve path for palette file: {pal_file}")
         
-        print(f"[DEBUG] Total ACT palettes loaded: {len(self.act_palettes)}")
+
     
     # 内部メソッド
     def _load_sff_internal(self, path: str):
         """SFFファイルの内部読み込み処理"""
-        print(f"[DEBUG] _load_sff_internal開始: {path}")
+
+        
+        # パレット選択状態をリセット
+        self._last_shared_palette_row = 0
+        self._is_dedicated_palette_active = False
+        self._user_selected_palette = False
+
         
         with open(path,'rb') as f:
             sig = f.read(12)
             f.seek(0)
-            print(f"[DEBUG] SFFシグネチャ: {sig[:12]}")
+
             if sig.startswith(b'ElecbyteSpr'):
                 f.seek(12)
                 ver = tuple(f.read(4))
                 f.seek(0)
-                print(f"[DEBUG] SFFバージョン: {ver}")
                 if ver in [(0,0,0,2),(0,1,0,2)]:
-                    print(f"[DEBUG] SFFv2として認識")
                     self.reader = SFFV2Reader(path)
                     self.is_v2 = True
                 else:
-                    print(f"[DEBUG] SFFv1として認識（Elecbyte形式）")
                     self.reader = SFFReader(path)
                     self.is_v2 = False
             else:
-                print(f"[DEBUG] SFFv1として認識（従来形式）")
                 self.reader = SFFReader(path)
                 self.is_v2 = False
         
         # 読み込み順序
-        print(f"[DEBUG] データ読み込み開始 (v2={self.is_v2})")
+
         if self.is_v2:
             with open(path,'rb') as f:
-                print(f"[DEBUG] SFFv2: ヘッダー読み込み開始")
                 self.reader.read_header(f)
-                print(f"[DEBUG] SFFv2: パレット読み込み開始")
                 self.reader.read_palettes(f)
-                print(f"[DEBUG] SFFv2: スプライト読み込み開始")
                 self.reader.read_sprites(f)
         else:
             with open(path,'rb') as f:
-                print(f"[DEBUG] SFFv1: ヘッダー読み込み開始")
                 self.reader.read_header(f)
-                print(f"[DEBUG] SFFv1: スプライト読み込み開始")
                 self.reader.read_sprites(f)
                 print(f"[DEBUG] SFFv1: パレット読み込み開始")
                 self.reader.read_palettes(f)
@@ -2303,8 +2318,8 @@ class SFFViewer(QMainWindow):
         # UIスケール（固定キャンバスでは制限付き）
         if not self.original_size:
             ui_scale = self.scale_factor
-            # 固定キャンバスでの最大スケール制限
-            max_scale = 2.5
+            # 固定キャンバスでの最大スケール制限（10倍まで許可）
+            max_scale = 10.0
             ui_scale = min(ui_scale, max_scale)
             
             combined_scale_x *= ui_scale
@@ -2408,10 +2423,9 @@ class SFFViewer(QMainWindow):
         scaled_w = max(200, scaled_w)
         scaled_h = max(150, scaled_h)
         
-        # 最大サイズ制限（ウィンドウ内に収まるように）
-        # 実際のウィンドウサイズより少し小さく設定
-        max_w = getattr(self.config, 'image_window_width', 820) - 40
-        max_h = getattr(self.config, 'image_window_height', 640) - 40
+        # 最大サイズ制限を大幅に緩和（大きなズームを許可）
+        max_w = getattr(self.config, 'image_window_width', 820) * 15  # 15倍まで拡大許可
+        max_h = getattr(self.config, 'image_window_height', 640) * 15  # 15倍まで拡大許可
         scaled_w = min(max_w, scaled_w)
         scaled_h = min(max_h, scaled_h)
         
@@ -2434,6 +2448,8 @@ class SFFViewer(QMainWindow):
     def on_scale_combo_changed(self):
         """スケールコンボボックス変更時の処理"""
         selected_scale = self.scale_values[self.scale_combo.currentIndex()]
+        print(f"[スケール変更] 選択されたスケール: {selected_scale}% (インデックス: {self.scale_combo.currentIndex()})")
+        print(f"[スケール変更] 利用可能なスケール値: {self.scale_values}")
         self.scale_factor = selected_scale / 100.0
         self._reset_canvas_scale_cache()  # スケール変更時にキャッシュリセット
         
@@ -2531,8 +2547,8 @@ class SFFViewer(QMainWindow):
                         scale_y = window_height / sprite_height
                         optimal_scale = min(scale_x, scale_y)
                         
-                        # スケール範囲を制限（10%〜100%）
-                        optimal_scale = min(optimal_scale, 1.0)  # 最大100%
+                        # スケール範囲を制限（10%以上）
+                        # optimal_scale = min(optimal_scale, 1.0)  # 最大100%制限を除去
                         optimal_scale = max(optimal_scale, 0.1)  # 最小10%
                         
                         print(f"[DEBUG] 縮小が必要: 計算スケール={optimal_scale:.3f}")
@@ -2568,7 +2584,7 @@ class SFFViewer(QMainWindow):
             self.show_empty_canvas()
             # パレットUIを無効化
             self.palette_list.setEnabled(False)
-            self.palette_status_label.setText("パレット選択: 無効 (ファイル未読み込み)")
+            self.palette_status_label.setText(self.language_manager.get_text('palette_selection_disabled_no_file'))
             self.palette_status_label.setStyleSheet("color: gray; font-size: 10px;")
             return
         
@@ -2587,7 +2603,7 @@ class SFFViewer(QMainWindow):
             self.show_empty_canvas()
             # パレットUIを無効化
             self.palette_list.setEnabled(False)
-            self.palette_status_label.setText("パレット選択: 無効 (スプライト未選択)")
+            self.palette_status_label.setText(self.language_manager.get_text('palette_selection_disabled_no_sprite'))
             self.palette_status_label.setStyleSheet("color: gray; font-size: 10px;")
             return
             
@@ -2595,6 +2611,9 @@ class SFFViewer(QMainWindow):
             # パレットUIの有効性を確認
             should_enable_palette = self._should_enable_palette_ui(idx)
             self._update_palette_ui_status(should_enable_palette, idx)
+            
+            # 専用パレットの自動適用
+            self._auto_apply_dedicated_palette(idx)
             
             print(f"[DEBUG] スプライト {idx} のレンダリング開始")
             # 通常のスプライト表示時はClsnデータをクリア
@@ -2618,8 +2637,14 @@ class SFFViewer(QMainWindow):
             print(f"[DEBUG] 画像描画開始")
             self.draw_image(qimg, axis_x, axis_y)
             if palette: 
-                print(f"[DEBUG] パレットプレビュー更新")
+                print(f"[RLE8_DEBUG] パレット更新: {len(palette)}色, 最初の色: {palette[0] if palette else 'N/A'}")
                 self.update_palette_preview(palette)
+            else:
+                # RLE8形式かチェック
+                sprite = self.reader.sprites[idx] if self.reader and idx >= 0 else None
+                is_rle8 = sprite and sprite.get('fmt') == 2
+                print(f"[RLE8_DEBUG] パレットが None - RLE8形式: {is_rle8}, fmt: {sprite.get('fmt') if sprite else 'N/A'}")
+                print(f"[RLE8_DEBUG] パレットプレビュー更新スキップ")
             print(f"[DEBUG] refresh_current_sprite完了")
         except Exception as e:
             print(f"[DEBUG] refresh_current_sprite エラー: {e}")
@@ -2627,7 +2652,7 @@ class SFFViewer(QMainWindow):
             # エラー時は空のキャンバスを表示
             self.show_empty_canvas()
             self.palette_list.setEnabled(False)
-            self.palette_status_label.setText("パレット選択: 無効 (エラー)")
+            self.palette_status_label.setText(self.language_manager.get_text('palette_selection_disabled_error'))
             self.palette_status_label.setStyleSheet("color: red; font-size: 10px;")
             self._safe_set_label_text(f'表示失敗: {e}')
 
@@ -2659,11 +2684,11 @@ class SFFViewer(QMainWindow):
                         # エラー時はパレット有効として扱う
                         return True
                 
-                # 専用パレット（使用回数1回）の場合
+                # 専用パレット（使用回数1回）の場合でも選択可能にする
                 pal_idx = sprite.get('pal_idx', 0)
                 if hasattr(self.reader, 'dedicated_palette_indices') and pal_idx in self.reader.dedicated_palette_indices:
-                    print(f"[DEBUG] スプライト {sprite_idx}: 専用パレット {pal_idx} のためパレット選択無効")
-                    return False
+                    print(f"[DEBUG] スプライト {sprite_idx}: 専用パレット {pal_idx} だが選択可能")
+                    return True
                 
                 # 通常のインデックス形式
                 return True
@@ -2713,26 +2738,150 @@ class SFFViewer(QMainWindow):
                     png_format = self._check_png_rgba_format(sprite_idx)
                     if png_format == 'rgba':
                         reason = "RGBA画像 (パレット不要)"
-                        self.palette_status_label.setText(f"パレット選択: 無効 ({reason})")
+                        self.palette_status_label.setText(f"{self.language_manager.get_text('palette_selection_disabled')} ({reason})")
                         self.palette_status_label.setStyleSheet("color: blue; font-size: 10px;")
                         print(f"[DEBUG] スプライト {sprite_idx}: パレットUI無効化 - {reason}")
                         return
                 
-                if (hasattr(self.reader, 'dedicated_palette_indices') and 
-                    pal_idx in self.reader.dedicated_palette_indices):
-                    reason = f"専用パレット (Pal {pal_idx})"
-                    self.palette_status_label.setText(f"パレット選択: 固定 ({reason})")
-                    self.palette_status_label.setStyleSheet("color: orange; font-size: 10px;")
-                    print(f"[DEBUG] スプライト {sprite_idx}: パレットUI固定表示 - {reason}")
-                    return
-            
+                # （専用パレット判定は削除 - 現在は選択可能）
+                
             # その他の理由
-            self.palette_status_label.setText("パレット選択: 無効")
+            self.palette_status_label.setText(self.language_manager.get_text('palette_selection_disabled'))
             self.palette_status_label.setStyleSheet("color: red; font-size: 10px;")
         else:
-            # 有効な場合
-            self.palette_status_label.setText("パレット選択: 有効")
-            self.palette_status_label.setStyleSheet("color: green; font-size: 10px;")
+            # 有効な場合 - 専用パレットかどうかの情報も表示
+            sprite = self.reader.sprites[sprite_idx] if self.reader and sprite_idx >= 0 else None
+            if sprite and hasattr(self.reader, 'dedicated_palette_indices'):
+                pal_idx = sprite.get('pal_idx', 0)
+                if pal_idx in self.reader.dedicated_palette_indices:
+                    self.palette_status_label.setText(f"{self.language_manager.get_text('palette_selection_enabled')} (専用パレット {pal_idx})")
+                    self.palette_status_label.setStyleSheet("color: orange; font-size: 10px;")
+                else:
+                    self.palette_status_label.setText(self.language_manager.get_text('palette_selection_enabled'))
+                    self.palette_status_label.setStyleSheet("color: green; font-size: 10px;")
+            else:
+                self.palette_status_label.setText(self.language_manager.get_text('palette_selection_enabled'))
+                self.palette_status_label.setStyleSheet("color: green; font-size: 10px;")
+    
+    def _auto_apply_dedicated_palette(self, sprite_idx):
+        """専用パレットが存在する場合、自動的にパレットリストで選択する"""
+        if not self.reader or sprite_idx < 0 or sprite_idx >= len(self.reader.sprites):
+            return
+        
+        # ユーザーが手動でパレットを選択した場合は自動適用をスキップ
+        if self._user_selected_palette:
+            print(f"[DEBUG] ユーザー選択優先: 専用パレット自動適用をスキップ")
+            return
+            
+        try:
+            sprite = self.reader.sprites[sprite_idx]
+            pal_idx = sprite.get('pal_idx', 0)
+            
+            # 専用パレットかチェック
+            is_dedicated = (hasattr(self.reader, 'dedicated_palette_indices') and 
+                           pal_idx in self.reader.dedicated_palette_indices)
+            
+            if is_dedicated:
+                # 専用パレットの場合
+                if not self._is_dedicated_palette_active:
+                    # 共有パレットから専用パレットに切り替わる時、現在の選択を記録
+                    current_row = self.palette_list.currentRow()
+                    if current_row >= 0:
+                        self._last_shared_palette_row = current_row
+                        print(f"[DEBUG] 共有パレット選択を記録: 行 {current_row}")
+                
+                # 専用パレットを適用
+                if self.is_v2:
+                    # SFFv2の場合: pal_idxがそのまま使用される
+                    target_row = pal_idx
+                else:
+                    # SFFv1の場合: パレット0のみ
+                    target_row = 0
+                
+                # パレットリストの範囲内かチェック
+                if 0 <= target_row < self.palette_list.count():
+                    # 現在の選択と異なる場合のみ更新（無限ループ防止）
+                    if self.palette_list.currentRow() != target_row:
+                        print(f"[DEBUG] ★専用パレット自動適用★ スプライト {sprite_idx} → 専用パレット {pal_idx} (リスト行 {target_row})")
+                        # パレット変更イベントを一時的に無効化
+                        self.palette_list.blockSignals(True)
+                        self.palette_list.setCurrentRow(target_row)
+                        self.palette_list.blockSignals(False)
+                        print(f"[DEBUG] ★パレット自動選択完了★ 行 {target_row} を選択")
+                    else:
+                        print(f"[DEBUG] 専用パレット {pal_idx} は既に選択済み (行 {target_row})")
+                        
+                    self._is_dedicated_palette_active = True
+                else:
+                    print(f"[DEBUG] 専用パレット {pal_idx} はパレットリスト範囲外 (count: {self.palette_list.count()})")
+            else:
+                # 共有パレットの場合
+                if self._is_dedicated_palette_active:
+                    # 専用パレットから共有パレットに切り替わる時、以前の選択を復元
+                    self._restore_shared_palette_selection(sprite_idx)
+                else:
+                    # 共有パレット同士の切り替え - 現在の選択を記録
+                    current_row = self.palette_list.currentRow()
+                    if current_row >= 0:
+                        self._last_shared_palette_row = current_row
+                        
+                self._is_dedicated_palette_active = False
+                print(f"[DEBUG] スプライト {sprite_idx} のパレット {pal_idx} は共有パレット")
+                
+        except Exception as e:
+            print(f"[DEBUG] パレット自動適用エラー: {e}")
+    
+    def _restore_shared_palette_selection(self, sprite_idx):
+        """共有パレットに戻る時の選択復元処理"""
+        try:
+            # 以前に選択していた共有パレットを復元
+            target_row = self._last_shared_palette_row
+            
+            # パレットリストの範囲内かチェック
+            if 0 <= target_row < self.palette_list.count():
+                # 現在の選択と異なる場合のみ更新
+                if self.palette_list.currentRow() != target_row:
+                    print(f"[DEBUG] ★共有パレット復元★ スプライト {sprite_idx} → 以前の共有パレット (リスト行 {target_row})")
+                    # パレット変更イベントを一時的に無効化
+                    self.palette_list.blockSignals(True)
+                    self.palette_list.setCurrentRow(target_row)
+                    self.palette_list.blockSignals(False)
+                    print(f"[DEBUG] ★共有パレット復元完了★ 行 {target_row} を選択")
+                else:
+                    print(f"[DEBUG] 共有パレット 行 {target_row} は既に選択済み")
+            else:
+                # 範囲外の場合はデフォルト（パレット0）に設定
+                print(f"[DEBUG] 共有パレット復元 - 範囲外のため行0をデフォルト選択")
+                self.palette_list.blockSignals(True)
+                self.palette_list.setCurrentRow(0)
+                self.palette_list.blockSignals(False)
+                self._last_shared_palette_row = 0
+                
+        except Exception as e:
+            print(f"[DEBUG] 共有パレット復元エラー: {e}")
+            # エラー時はデフォルトパレット0を選択
+            self.palette_list.blockSignals(True)
+            self.palette_list.setCurrentRow(0)
+            self.palette_list.blockSignals(False)
+            self._last_shared_palette_row = 0
+    
+    def _on_palette_selected(self, row):
+        """パレット選択時のイベントハンドラー"""
+        if row < 0:
+            return
+            
+        # ユーザーが手動でパレットを選択したフラグを設定
+        self._user_selected_palette = True
+        
+        # 手動でパレットが選択された場合、共有パレットとして記録
+        if not self._is_dedicated_palette_active:
+            self._last_shared_palette_row = row
+            print(f"[DEBUG] 手動選択による共有パレット記録: 行 {row}")
+        
+        print(f"[DEBUG] ユーザーパレット選択: 行 {row}")
+        
+        # スプライトを再描画
+        self.refresh_current_sprite()
     
     def display_current_animation_frame(self):
         """現在のアニメーションフレームを表示"""
@@ -2780,6 +2929,9 @@ class SFFViewer(QMainWindow):
                 should_enable_palette = self._should_enable_palette_ui(sprite_idx)
                 self._update_palette_ui_status(should_enable_palette, sprite_idx)
                 
+                # 専用パレットの自動適用（アニメーション時）
+                self._auto_apply_dedicated_palette(sprite_idx)
+                
                 # パレット選択を考慮してレンダリング
                 qimg, palette = self.render_sprite(sprite_idx)
                 print(f"[DEBUG] アニメーション - レンダリング完了: 画像={qimg is not None}, パレット={palette is not None}")
@@ -2798,6 +2950,8 @@ class SFFViewer(QMainWindow):
                 self.draw_image(qimg, axis_x, axis_y, frame_data=frame)
                 if palette: 
                     self.update_palette_preview(palette)
+                else:
+                    print(f"[DEBUG] アニメーション - パレットが None - プレビュー更新スキップ")
                 
                 if self.config.debug_mode:
                     # 現在のフレームのスプライトサイズに基づいてキャンバスサイズを計算
@@ -2816,7 +2970,7 @@ class SFFViewer(QMainWindow):
                 self.show_empty_canvas()
                 # パレットUIを無効化
                 self.palette_list.setEnabled(False)
-                self.palette_status_label.setText("パレット選択: 無効 (スプライト見つからず)")
+                self.palette_status_label.setText(self.language_manager.get_text('palette_selection_disabled_not_found'))
                 self.palette_status_label.setStyleSheet("color: gray; font-size: 10px;")
             
         except Exception as e:
@@ -2829,7 +2983,7 @@ class SFFViewer(QMainWindow):
             self.show_empty_canvas()
             # パレットUIを無効化
             self.palette_list.setEnabled(False)
-            self.palette_status_label.setText("パレット選択: 無効 (エラー)")
+            self.palette_status_label.setText(self.language_manager.get_text('palette_selection_disabled_error'))
             self.palette_status_label.setStyleSheet("color: gray; font-size: 10px;")
     
     def show_empty_canvas(self):
@@ -2951,6 +3105,10 @@ class SFFViewer(QMainWindow):
         # 軸位置の合計（基準軸は除外）
         total_x = sprite_x + air_x
         total_y = sprite_y + air_y
+        
+        if hasattr(self.reader, 'sprites') and 0 <= sprite_idx < len(self.reader.sprites):
+            s = self.reader.sprites[sprite_idx]
+            print(f"[軸情報] Sprite{sprite_idx}: 軸({sprite_x},{sprite_y}) + AIR軸({air_x},{air_y}) = 合計({total_x},{total_y}), サイズ{s.get('width', 0)}x{s.get('height', 0)}")
         
         # 軸値の妥当性をチェック（画像サイズの2倍を超える場合は制限）
         if hasattr(self.reader, 'sprites') and 0 <= sprite_idx < len(self.reader.sprites):
@@ -3317,14 +3475,14 @@ class SFFViewer(QMainWindow):
             base_img = self.renderer.remove_alpha(base_img)
         
         # 統合スケールを計算
-        combined_scale_x, combined_scale_y = self.calculate_combined_scale(debug=True)
+        combined_scale_x, combined_scale_y = self.calculate_combined_scale(debug=False)
         
         # ====== STEP 2: キャンバスサイズ決定（スケーリング前） ======
         
         # 全画像対応の基本キャンバスサイズを取得
         canvas_w, canvas_h = self.calculate_optimal_canvas_size()
         
-        print(f"[DEBUG] 基本キャンバス: {canvas_w}x{canvas_h}")
+        # print(f"[DEBUG] 基本キャンバス: {canvas_w}x{canvas_h}")
         
         # 無スケール原点（キャンバス中心）
         origin_x = canvas_w / 2
@@ -3336,13 +3494,14 @@ class SFFViewer(QMainWindow):
         base_img_w, base_img_h = base_img.width(), base_img.height()
         
         # 画像の描画位置を計算（軸を考慮）
-        # キャンバス中心から軸位置を差し引いて画像左上座標を決定
+        # 軸位置は画像内の基準点を示すため、キャンバス中心から軸位置分だけずらす
+        # つまり、画像の左上座標 = キャンバス中心 - 軸位置
         draw_x = origin_x - axis_x
         draw_y = origin_y - axis_y
         
-        # 画像がキャンバス外に出ないように調整
-        draw_x = max(0, min(draw_x, canvas_w - base_img_w))
-        draw_y = max(0, min(draw_y, canvas_h - base_img_h))
+        # 画像がキャンバス外に出ないように調整（この制約は緩和する）
+        # draw_x = max(0, min(draw_x, canvas_w - base_img_w))
+        # draw_y = max(0, min(draw_y, canvas_h - base_img_h))
         
         print(f"[DEBUG] 画像配置: 位置({draw_x:.1f},{draw_y:.1f}), サイズ({base_img_w}x{base_img_h})")
         
@@ -3387,15 +3546,15 @@ class SFFViewer(QMainWindow):
         # ====== STEP 5: スケーリング適用 ======
         
         # 統合スケールを計算
-        combined_scale_x, combined_scale_y = self.calculate_combined_scale(debug=True)
+        combined_scale_x, combined_scale_y = self.calculate_combined_scale(debug=False)
         
         # スケーリングが必要な場合のみ適用
         if abs(combined_scale_x - 1.0) > 0.01 or abs(combined_scale_y - 1.0) > 0.01:
             scaled_w = int(canvas_w * combined_scale_x)
             scaled_h = int(canvas_h * combined_scale_y)
             
-            # 最大サイズ制限を適用
-            max_w, max_h = 1600, 1200
+            # 最大サイズ制限を適用（より高い制限値に変更）
+            max_w, max_h = 8000, 6000  # 従来の1600x1200から8000x6000に拡張
             if scaled_w > max_w or scaled_h > max_h:
                 scale_factor = min(max_w / scaled_w, max_h / scaled_h)
                 scaled_w = int(scaled_w * scale_factor)
@@ -3551,7 +3710,7 @@ class SFFViewer(QMainWindow):
     def export_animation_gif(self):
         """GIFアニメーション出力（統一座標変換システム使用）"""
         if not PIL_AVAILABLE:
-            self._safe_set_label_text('エラー: PIL/Pillowライブラリが必要です')
+            self._safe_set_label_text(self.language_manager.get_text('error_pil_required'))
             return
         
         # 現在選択されているアニメーションを取得
@@ -3965,11 +4124,11 @@ class SFFViewer(QMainWindow):
                         self._safe_set_label_text(f'GIF出力完了(透明度なし): {file_path}')
                         print(f"[GIF出力完了] RGB出力: {len(rgb_frames)}フレーム, {file_path}")
             else:
-                self._safe_set_label_text('GIF出力エラー: フレームの変換に失敗しました')
+                self._safe_set_label_text(self.language_manager.get_text('error_gif_frame_conversion'))
                 print(f"[GIF出力エラー] フレームの変換に失敗")
             
         except Exception as e:
-            self._safe_set_label_text(f'GIF出力エラー: {str(e)}')
+            self._safe_set_label_text(self.language_manager.get_text('error_gif_output', error=str(e)))
             print(f"[GIF出力エラー] {e}")
             import traceback
             traceback.print_exc()
@@ -4159,6 +4318,9 @@ class SFFViewer(QMainWindow):
 
     def update_palette_preview(self, palette: List[Tuple[int,int,int,int]]):
         """パレットプレビューを更新"""
+        if not palette:
+            return
+            
         prev = QImage(16, 16, QImage.Format_ARGB32)
         p = QPainter(prev)
         for i, (r, g, b, a) in enumerate(palette[:256]):
@@ -4394,13 +4556,13 @@ class SFFViewer(QMainWindow):
     def export_current_image(self):
         """現在の画像を出力（GIF出力と同じ処理）"""
         if not PIL_AVAILABLE:
-            self._safe_set_label_text('エラー: PIL/Pillowライブラリが必要です')
+            self._safe_set_label_text(self.language_manager.get_text('error_pil_required'))
             return
         
         # 現在選択されているスプライトを取得
         current_row = self.sprite_list.currentRow()
         if current_row < 0 or current_row >= len(self.reader.sprites):
-            self._safe_set_label_text('エラー: スプライトが選択されていません')
+            self._safe_set_label_text(self.language_manager.get_text('error_no_sprite_selected'))
             return
         
         sprite_idx = current_row
@@ -4532,7 +4694,7 @@ class SFFViewer(QMainWindow):
         if not file_path:
             return
         
-        self._safe_set_label_text('SFF全体スプライトシート生成中...')
+        self._safe_set_label_text(self.language_manager.get_text('progress_spritesheet_all'))
         QApplication.processEvents()
         
         try:
@@ -4542,33 +4704,60 @@ class SFFViewer(QMainWindow):
                 self._safe_set_label_text('エラー: 出力するスプライトがありません')
                 return
             
-            spritesheet = self._create_single_spritesheet(sprites, max_columns=25, padding=3)
+            # 複数のスプライトシートに分割して出力
+            sheets_info = self._create_multiple_spritesheets(sprites, max_columns=25, padding=3)
             
-            if spritesheet:
+            if not sheets_info:
+                self._safe_set_label_text('エラー: スプライトシートの生成に失敗しました')
+                return
+            
+            # 複数ファイルの場合はファイル名に番号を追加
+            base_path = file_path.rsplit('.', 1)[0]
+            ext = file_path.rsplit('.', 1)[1] if '.' in file_path else 'png'
+            
+            saved_files = []
+            total_valid_sprites = 0
+            total_invalid_sprites = 0
+            
+            for i, (spritesheet, valid_count, invalid_count) in enumerate(sheets_info):
+                if len(sheets_info) > 1:
+                    current_file_path = f"{base_path}_part{i+1:03d}.{ext}"
+                else:
+                    current_file_path = file_path
+                
                 # キャンバスエリアを無視して画像部分のみを抽出
                 if hasattr(spritesheet, 'extract_image_area'):
                     output_sheet = spritesheet.extract_image_area()
-                    print(f"[全体スプライトシート] 画像エリアのみ抽出: {output_sheet.size}")
+                    print(f"[全体スプライトシート{i+1}] 画像エリアのみ抽出: {output_sheet.size}")
                 else:
                     output_sheet = spritesheet
+                    print(f"[全体スプライトシート{i+1}] extract_image_area未対応 - 元のキャンバス使用: {output_sheet.size}")
                 
-                # 不要な透過領域をトリミング
-                trimmed_spritesheet = self._trim_transparent_areas(output_sheet)
-                if trimmed_spritesheet:
-                    output_sheet = trimmed_spritesheet
-                    print(f"[全体スプライトシート] トリミング完了: {output_sheet.size}")
+                # スプライトシートの場合はトリミングを行わない
+                # 大きなエフェクト画像が切れてしまうのを防ぐため
+                output_sheet = output_sheet
+                print(f"[全体スプライトシート{i+1}] トリミングスキップ: {output_sheet.size}")
                 
-                output_sheet.save(file_path, 'PNG')
-                # 統計情報を表示
-                sprite_count = len(sprites)
-                # Noneでないスプライト（有効な画像）の数をカウント
-                valid_sprites = sum(1 for sprite in sprites if sprite is not None)
-                invalid_sprites = sprite_count - valid_sprites
-                self._safe_set_label_text(f'SFF全体スプライトシート保存完了: {file_path} (有効:{valid_sprites}個, 無効:{invalid_sprites}個)')
-                print(f"[全体スプライトシート] 保存完了: {file_path}")
-                print(f"[全体スプライトシート] 統計: 総スプライト{sprite_count}個, 有効画像{valid_sprites}個, 無効画像{invalid_sprites}個, サイズ{output_sheet.size}")
+                # 追加デバッグ: 最終画像の詳細情報
+                if hasattr(spritesheet, 'image_area_bounds'):
+                    bounds = spritesheet.image_area_bounds
+                    print(f"[全体スプライトシート{i+1}] キャンバス画像エリア: {bounds}")
+                else:
+                    print(f"[全体スプライトシート{i+1}] 画像エリア境界情報なし")
+                
+                output_sheet.save(current_file_path, 'PNG')
+                saved_files.append(current_file_path)
+                total_valid_sprites += valid_count
+                total_invalid_sprites += invalid_count
+                
+                print(f"[全体スプライトシート{i+1}] 保存完了: {current_file_path}")
+                print(f"[全体スプライトシート{i+1}] 統計: 有効画像{valid_count}個, 無効画像{invalid_count}個, サイズ{output_sheet.size}")
+            
+            # 統計情報を表示
+            if len(saved_files) > 1:
+                self._safe_set_label_text(f'SFF全体スプライトシート保存完了: {len(saved_files)}個のファイル (有効:{total_valid_sprites}個, 無効:{total_invalid_sprites}個)')
             else:
-                self._safe_set_label_text('エラー: SFF全体スプライトシートの生成に失敗しました')
+                self._safe_set_label_text(f'SFF全体スプライトシート保存完了: {saved_files[0]} (有効:{total_valid_sprites}個, 無効:{total_invalid_sprites}個)')
             
         except Exception as e:
             self._safe_set_label_text(f'エラー: {str(e)}')
@@ -4620,33 +4809,52 @@ class SFFViewer(QMainWindow):
                 self._safe_set_label_text('エラー: 選択中のアニメーションに出力するスプライトがありません')
                 return
             
-            spritesheet = self._create_single_spritesheet(sprites, max_columns=25, padding=3)
+            # アニメーション用も複数スプライトシートに対応
+            sheets_info = self._create_multiple_spritesheets(sprites, max_columns=25, padding=3)
             
-            if spritesheet:
+            if not sheets_info:
+                self._safe_set_label_text('エラー: アニメーションスプライトシートの生成に失敗しました')
+                return
+            
+            # 複数ファイルの場合はファイル名に番号を追加
+            base_path = file_path.rsplit('.', 1)[0]
+            ext = file_path.rsplit('.', 1)[1] if '.' in file_path else 'png'
+            
+            saved_files = []
+            total_valid_sprites = 0
+            total_invalid_sprites = 0
+            
+            for i, (spritesheet, valid_count, invalid_count) in enumerate(sheets_info):
+                if len(sheets_info) > 1:
+                    current_file_path = f"{base_path}_part{i+1:03d}.{ext}"
+                else:
+                    current_file_path = file_path
+                
                 # キャンバスエリアを無視して画像部分のみを抽出
                 if hasattr(spritesheet, 'extract_image_area'):
                     output_sheet = spritesheet.extract_image_area()
-                    print(f"[アニメーションスプライトシート] 画像エリアのみ抽出: {output_sheet.size}")
+                    print(f"[アニメーションスプライトシート{i+1}] 画像エリアのみ抽出: {output_sheet.size}")
                 else:
                     output_sheet = spritesheet
                 
-                # 不要な透過領域をトリミング
-                trimmed_spritesheet = self._trim_transparent_areas(output_sheet)
-                if trimmed_spritesheet:
-                    output_sheet = trimmed_spritesheet
-                    print(f"[アニメーションスプライトシート] トリミング完了: {output_sheet.size}")
+                # スプライトシートの場合はトリミングを行わない
+                # 大きなエフェクト画像が切れてしまうのを防ぐため
+                output_sheet = output_sheet
+                print(f"[アニメーションスプライトシート{i+1}] トリミングスキップ: {output_sheet.size}")
                 
-                output_sheet.save(file_path, 'PNG')
-                # 統計情報を表示
-                sprite_count = len(sprites)
-                # Noneでないスプライト（有効な画像）の数をカウント
-                valid_sprites = sum(1 for sprite in sprites if sprite is not None)
-                invalid_sprites = sprite_count - valid_sprites
-                self._safe_set_label_text(f'アニメーション {anim_no} スプライトシート保存完了: {file_path} (有効:{valid_sprites}個, 無効:{invalid_sprites}個)')
-                print(f"[アニメーションスプライトシート] 保存完了: {file_path}")
-                print(f"[アニメーションスプライトシート] 統計: 総スプライト{sprite_count}個, 有効画像{valid_sprites}個, 無効画像{invalid_sprites}個, サイズ{output_sheet.size}")
+                output_sheet.save(current_file_path, 'PNG')
+                saved_files.append(current_file_path)
+                total_valid_sprites += valid_count
+                total_invalid_sprites += invalid_count
+                
+                print(f"[アニメーションスプライトシート{i+1}] 保存完了: {current_file_path}")
+                print(f"[アニメーションスプライトシート{i+1}] 統計: 有効画像{valid_count}個, 無効画像{invalid_count}個, サイズ{output_sheet.size}")
+            
+            # 統計情報を表示
+            if len(saved_files) > 1:
+                self._safe_set_label_text(f'アニメーション {anim_no} スプライトシート保存完了: {len(saved_files)}個のファイル (有効:{total_valid_sprites}個, 無効:{total_invalid_sprites}個)')
             else:
-                self._safe_set_label_text('エラー: アニメーションスプライトシートの生成に失敗しました')
+                self._safe_set_label_text(f'アニメーション {anim_no} スプライトシート保存完了: {saved_files[0]} (有効:{total_valid_sprites}個, 無効:{total_invalid_sprites}個)')
             
         except Exception as e:
             self._safe_set_label_text(f'エラー: {str(e)}')
@@ -4660,8 +4868,32 @@ class SFFViewer(QMainWindow):
         for i, sprite in enumerate(self.reader.sprites):
             sprites.append((i, sprite))
         
+        print(f"[スプライト取得] 全スプライト数: {len(sprites)}")
+        
+        # グループ別統計を表示
+        groups = {}
+        for i, sprite in sprites:
+            group_no = sprite.get('group_no', 0)
+            if group_no not in groups:
+                groups[group_no] = []
+            groups[group_no].append((i, sprite.get('sprite_no', 0)))
+        
+        # 主要グループの統計を表示（9000グループを含む）
+        for group_no in sorted(groups.keys()):
+            sprite_count = len(groups[group_no])
+            sprite_nos = [s[1] for s in groups[group_no]]
+            min_sprite = min(sprite_nos) if sprite_nos else 0
+            max_sprite = max(sprite_nos) if sprite_nos else 0
+            print(f"[スプライト統計] グループ{group_no}: {sprite_count}個 (sprite_no: {min_sprite}-{max_sprite})")
+            
+            # 9000グループの詳細を表示
+            if group_no == 9000:
+                print(f"[9000グループ詳細] 最初の5個: {groups[group_no][:5]}")
+        
         # グループ番号、スプライト番号でソート
         sprites.sort(key=lambda x: (x[1].get('group_no', 0), x[1].get('sprite_no', 0)))
+        
+        print(f"[スプライト取得] ソート完了: {len(sprites)}個のスプライトを返します")
         return sprites
 
     def _get_animation_sprites_sorted(self):
@@ -4703,6 +4935,161 @@ class SFFViewer(QMainWindow):
         
         return sprites
 
+    def _create_multiple_spritesheets(self, sprites, max_columns=25, padding=3):
+        """サイズ制限を考慮して複数のスプライトシートに分割"""
+        if not sprites:
+            print("[複数スプライトシート] エラー: スプライトリストが空")
+            return []
+        
+        # PILの画像サイズ制限を取得（安全マージンを設ける）
+        try:
+            from PIL import Image
+            max_pixels = getattr(Image, 'MAX_IMAGE_PIXELS', 89478485)
+            # 分割を確実にするため制限の30%を上限とする
+            safe_max_pixels = int(max_pixels * 0.3)
+            print(f"[複数スプライトシート] PIL制限: {max_pixels}ピクセル, 安全制限: {safe_max_pixels}ピクセル")
+        except:
+            safe_max_pixels = 25000000  # より保守的なデフォルト値
+            print(f"[複数スプライトシート] デフォルト制限: {safe_max_pixels}ピクセル")
+        
+        # スプライトをグループ別に分割
+        sprite_groups = self._group_sprites_by_sff_group(sprites)
+        
+        sheets_info = []  # [(spritesheet, valid_count, invalid_count), ...]
+        current_batch = []
+        current_batch_pixels = 0
+        current_batch_valid = 0
+        current_batch_invalid = 0
+        
+        # スプライトフォーマット統計を取得
+        format_stats = {}
+        rle8_count = 0
+        for idx, sprite in sprites:
+            fmt = sprite.get('fmt', 'Unknown')
+            format_stats[fmt] = format_stats.get(fmt, 0) + 1
+            if fmt == 2:
+                rle8_count += 1
+        
+        print(f"[複数スプライトシート] 処理開始: {len(sprite_groups)}グループ, 総スプライト{len(sprites)}個")
+        print(f"[複数スプライトシート] フォーマット統計: {format_stats}")
+        print(f"[複数スプライトシート] RLE8スプライト: {rle8_count}/{len(sprites)}個 ({rle8_count/len(sprites)*100:.1f}%)")
+        
+        for group_no, group_sprites in sprite_groups.items():
+            # このグループを現在のバッチに追加した場合の推定サイズを計算
+            estimated_pixels = self._estimate_group_pixels(group_sprites, max_columns, padding)
+            projected_pixels = current_batch_pixels + estimated_pixels
+            
+            # グループのフォーマット統計
+            group_formats = {}
+            for idx, sprite in group_sprites:
+                fmt = sprite.get('fmt', 'Unknown')
+                group_formats[fmt] = group_formats.get(fmt, 0) + 1
+            
+            format_info = ", ".join([f"fmt{k}:{v}個" for k, v in group_formats.items()])
+            print(f"[複数スプライトシート] グループ{group_no}: {len(group_sprites)}スプライト, 推定{estimated_pixels}ピクセル, フォーマット[{format_info}]")
+            
+            # サイズ制限を超える場合は現在のバッチを確定
+            if current_batch and projected_pixels > safe_max_pixels:
+                print(f"[複数スプライトシート] サイズ制限到達: {projected_pixels} > {safe_max_pixels}, バッチ確定")
+                
+                # 現在のバッチでスプライトシートを生成
+                spritesheet = self._create_single_spritesheet(current_batch, max_columns, padding)
+                if spritesheet:
+                    sheets_info.append((spritesheet, current_batch_valid, current_batch_invalid))
+                    print(f"[複数スプライトシート] バッチ{len(sheets_info)}完了: {len(current_batch)}スプライト, {current_batch_pixels}ピクセル")
+                
+                # 新しいバッチを開始
+                current_batch = []
+                current_batch_pixels = 0
+                current_batch_valid = 0
+                current_batch_invalid = 0
+            
+            # 現在のグループを現在のバッチに追加
+            current_batch.extend(group_sprites)
+            current_batch_pixels += estimated_pixels
+            
+            # 有効・無効スプライト数をカウント
+            for sprite_idx, sprite in group_sprites:
+                if sprite is not None:
+                    current_batch_valid += 1
+                else:
+                    current_batch_invalid += 1
+        
+        # 最後のバッチを処理
+        if current_batch:
+            print(f"[複数スプライトシート] 最終バッチ処理: {len(current_batch)}スプライト, {current_batch_pixels}ピクセル")
+            spritesheet = self._create_single_spritesheet(current_batch, max_columns, padding)
+            if spritesheet:
+                sheets_info.append((spritesheet, current_batch_valid, current_batch_invalid))
+                print(f"[複数スプライトシート] バッチ{len(sheets_info)}完了: {len(current_batch)}スプライト")
+        
+        print(f"[複数スプライトシート] 完了: {len(sheets_info)}個のスプライトシートを生成")
+        return sheets_info
+    
+    def _group_sprites_by_sff_group(self, sprites):
+        """スプライトをSFFグループ番号別に分類"""
+        groups = {}
+        
+        for sprite_idx, sprite in sprites:
+            if sprite is None:
+                group_no = 0  # デフォルトグループ
+            else:
+                group_no = sprite.get('group_no', 0)
+            
+            if group_no not in groups:
+                groups[group_no] = []
+            groups[group_no].append((sprite_idx, sprite))
+        
+        # グループ番号順にソート
+        sorted_groups = {}
+        for group_no in sorted(groups.keys()):
+            sorted_groups[group_no] = groups[group_no]
+        
+        print(f"[グループ分け] {len(sorted_groups)}グループに分類: {list(sorted_groups.keys())}")
+        return sorted_groups
+    
+    def _estimate_group_pixels(self, group_sprites, max_columns, padding):
+        """グループのスプライトシートサイズを推定"""
+        if not group_sprites:
+            return 0
+        
+        # 実際のスプライトサイズを調べる
+        total_width = 0
+        total_height = 0
+        valid_count = 0
+        
+        for sprite_idx, sprite in group_sprites:
+            if sprite is not None:
+                width = sprite.get('w', 100)  # デフォルト100
+                height = sprite.get('h', 100)  # デフォルト100
+                total_width += width
+                total_height = max(total_height, height)
+                valid_count += 1
+        
+        if valid_count == 0:
+            # スプライトが無効な場合のデフォルト推定
+            avg_sprite_width = 100
+            avg_sprite_height = 100
+        else:
+            avg_sprite_width = total_width // valid_count if valid_count > 0 else 100
+            avg_sprite_height = total_height
+        
+        num_sprites = len(group_sprites)
+        num_rows = (num_sprites + max_columns - 1) // max_columns
+        
+        # より保守的に推定（大きめに見積もる）
+        estimated_width = min(num_sprites, max_columns) * (avg_sprite_width + padding * 2)
+        estimated_height = num_rows * (avg_sprite_height + padding * 2)
+        
+        # キャンバスエリアを考慮（3倍の安全マージン）
+        canvas_width = estimated_width * 3
+        canvas_height = estimated_height * 3
+        
+        estimated_pixels = canvas_width * canvas_height
+        
+        print(f"[サイズ推定] {num_sprites}スプライト(有効{valid_count}) → {num_rows}行 → 推定{estimated_width}x{estimated_height} → キャンバス{canvas_width}x{canvas_height} = {estimated_pixels}ピクセル")
+        return estimated_pixels
+
     def _create_single_spritesheet(self, sprites, max_columns=25, padding=3):
         """1枚の大きなスプライトシートを生成"""
         if not sprites:
@@ -4710,6 +5097,10 @@ class SFFViewer(QMainWindow):
             return None
         
         try:
+            # PILのサイズ制限をチェック
+            from PIL import Image
+            max_pixels = getattr(Image, 'MAX_IMAGE_PIXELS', 89478485)
+            
             # 各スプライトの画像を取得
             sprite_images = []
             sprite_info = []  # (画像, グループ番号, スプライト番号, 正常フラグ) の情報
@@ -4718,7 +5109,7 @@ class SFFViewer(QMainWindow):
             normal_count = 0  # 正常レンダリング数
             placeholder_count = 0  # プレースホルダー数
             
-            print(f"[1枚スプライトシート] 処理開始: {len(sprites)} スプライト")
+            print(f"[1枚スプライトシート] 処理開始: {len(sprites)} スプライト (PIL制限: {max_pixels}ピクセル)")
             
             for sprite_idx, sprite in sprites:
                 try:
@@ -4860,9 +5251,30 @@ class SFFViewer(QMainWindow):
             print(f"[1枚スプライトシート] SFFグループ別レイアウト: {len(rows_data)}行, 全体: {total_width}x{total_height}")
             print(f"[1枚スプライトシート] SFFのgroup_noごとに改行: パディング{padding}px")
             
+            # レイアウト詳細情報を表示
+            for i, (row_width, row_height, images_in_row) in enumerate(rows_data):
+                print(f"[1枚スプライトシート] 行{i+1}: 幅{row_width}, 高さ{row_height}, 画像数{len(images_in_row)}")
+            
+            # キャンバスエリア計算の詳細を表示
+            print(f"[1枚スプライトシート] 画像エリア計算: {total_width}x{total_height}")
+            
             # キャンバスエリアを2倍にする
             canvas_width = total_width * 2
             canvas_height = total_height * 2
+            
+            print(f"[1枚スプライトシート] キャンバス拡張（2倍）: {canvas_width}x{canvas_height}")
+            
+            # PILのサイズ制限をチェック
+            total_pixels = canvas_width * canvas_height
+            if total_pixels > max_pixels:
+                print(f"[1枚スプライトシート] 警告: 計算サイズ {canvas_width}x{canvas_height} ({total_pixels}ピクセル) がPIL制限 ({max_pixels}ピクセル) を超過")
+                # キャンバスサイズを制限内に収める
+                scale_factor = (max_pixels / total_pixels) ** 0.5 * 0.9  # 安全マージン
+                canvas_width = int(canvas_width * scale_factor)
+                canvas_height = int(canvas_height * scale_factor)
+                total_width = int(total_width * scale_factor)
+                total_height = int(total_height * scale_factor)
+                print(f"[1枚スプライトシート] サイズ縮小: {canvas_width}x{canvas_height} (縮小率: {scale_factor:.3f})")
             
             # 画像エリアの開始位置（キャンバス中央に配置）
             offset_x = (canvas_width - total_width) // 2
@@ -4872,7 +5284,11 @@ class SFFViewer(QMainWindow):
             print(f"[1枚スプライトシート] キャンバスサイズ: {canvas_width}x{canvas_height}")
             
             # スプライトシートを作成（マゼンタ背景）
-            spritesheet = Image.new('RGBA', (canvas_width, canvas_height), (255, 0, 255, 255))
+            try:
+                spritesheet = Image.new('RGBA', (canvas_width, canvas_height), (255, 0, 255, 255))
+            except Exception as e:
+                print(f"[1枚スプライトシート] エラー: 画像作成失敗 {canvas_width}x{canvas_height}: {e}")
+                return None
             
             # SFFグループ別可変セルで画像を配置
             current_y = offset_y
@@ -4916,13 +5332,31 @@ class SFFViewer(QMainWindow):
             # 出力用に画像部分のみを抽出する関数を作成
             def extract_image_area():
                 """キャンバスから画像部分のみを抽出"""
-                return spritesheet.crop((offset_x, offset_y, offset_x + total_width, offset_y + total_height))
+                extract_bounds = (offset_x, offset_y, offset_x + total_width, offset_y + total_height)
+                print(f"[画像エリア抽出] 抽出範囲: {extract_bounds}")
+                print(f"[画像エリア抽出] キャンバスサイズ: {spritesheet.size}")
+                print(f"[画像エリア抽出] 画像エリアサイズ: {total_width}x{total_height}")
+                
+                # 抽出範囲がキャンバス内に収まっているかチェック
+                canvas_w, canvas_h = spritesheet.size
+                if offset_x + total_width > canvas_w or offset_y + total_height > canvas_h:
+                    print(f"[画像エリア抽出] 警告: 抽出範囲がキャンバスを超過")
+                    # 安全な範囲に修正
+                    safe_x = min(offset_x, canvas_w - 1)
+                    safe_y = min(offset_y, canvas_h - 1)
+                    safe_w = min(total_width, canvas_w - safe_x)
+                    safe_h = min(total_height, canvas_h - safe_y)
+                    extract_bounds = (safe_x, safe_y, safe_x + safe_w, safe_y + safe_h)
+                    print(f"[画像エリア抽出] 安全範囲に修正: {extract_bounds}")
+                
+                return spritesheet.crop(extract_bounds)
 
             # キャンバス情報をシートオブジェクトに付加
             spritesheet.image_area_bounds = (offset_x, offset_y, offset_x + total_width, offset_y + total_height)
             spritesheet.extract_image_area = extract_image_area
             
             print(f"[1枚スプライトシート] 生成完了: キャンバス{canvas_width}x{canvas_height}, 画像エリア{total_width}x{total_height} ({len(sprite_images)}個のスプライト)")
+            print(f"[1枚スプライトシート] 画像配置オフセット: ({offset_x}, {offset_y})")
             return spritesheet
             
         except Exception as e:
@@ -5090,11 +5524,10 @@ class SFFViewer(QMainWindow):
                     else:
                         output_sheet = spritesheet
                     
-                    # 不要な透過領域をトリミング
-                    trimmed_spritesheet = self._trim_transparent_areas(output_sheet)
-                    if trimmed_spritesheet:
-                        output_sheet = trimmed_spritesheet
-                        print(f"[スプライトシート] グループ {group_no} トリミング完了: {output_sheet.size}")
+                    # スプライトシートの場合はトリミングを行わない
+                    # 大きなエフェクト画像が切れてしまうのを防ぐため
+                    output_sheet = output_sheet
+                    print(f"[スプライトシート] グループ {group_no} トリミングスキップ: {output_sheet.size}")
                     
                     output_sheet.save(output_path, 'PNG')
                     created_count += 1
@@ -5180,11 +5613,10 @@ class SFFViewer(QMainWindow):
                     else:
                         output_sheet = spritesheet
                     
-                    # 不要な透過領域をトリミング
-                    trimmed_spritesheet = self._trim_transparent_areas(output_sheet)
-                    if trimmed_spritesheet:
-                        output_sheet = trimmed_spritesheet
-                        print(f"[アニメーションスプライトシート] トリミング完了: {output_sheet.size}")
+                    # スプライトシートの場合はトリミングを行わない
+                    # 大きなエフェクト画像が切れてしまうのを防ぐため
+                    output_sheet = output_sheet
+                    print(f"[アニメーションスプライトシート] トリミングスキップ: {output_sheet.size}")
                     
                     output_sheet.save(file_path, 'PNG')
                     self._safe_set_label_text(f'アニメーションスプライトシートを保存しました: {file_path}')
@@ -5482,6 +5914,10 @@ class SFFViewer(QMainWindow):
     def _create_qimage_from_decoded(self, decoded_data, palette, width, height, mode):
         """decode_sprite_v2の結果からQImageを作成"""
         try:
+            debug_print(f"[create_qimage] サイズ: {width}x{height}, モード: {mode}")
+            debug_print(f"[create_qimage] データ長: {len(decoded_data)}")
+            debug_print(f"[create_qimage] パレット長: {len(palette) if palette else 0}")
+            
             if mode == 'rgba':
                 # RGBA形式の場合
                 img = QImage(width, height, QImage.Format_RGBA8888)
@@ -5502,22 +5938,43 @@ class SFFViewer(QMainWindow):
                             mv[dst_off:dst_off+row_bytes] = decoded_data[src_off:src_off+row_bytes]
                     return img
                 except Exception as e:
-                    print(f"[create_qimage] RGBA memoryview失敗、fallback: {e}")
+                    debug_print(f"[create_qimage] RGBA memoryview失敗、fallback: {e}")
                     # フォールバック: 手動設定
                     img = QImage(bytes(decoded_data[:width*height*4]), width, height, QImage.Format_RGBA8888)
                     return img
                     
             else:
                 # インデックス形式の場合
+                debug_print(f"[create_qimage] インデックス形式として処理")
+                
+                # デコードされたデータの先頭をサンプル表示
+                if decoded_data:
+                    sample_size = min(32, len(decoded_data))
+                    sample_hex = ' '.join(f'{b:02x}' for b in decoded_data[:sample_size])
+                    debug_print(f"[create_qimage] デコード済みデータサンプル: {sample_hex}")
+                
+                # パレットの内容をサンプル表示
+                if palette:
+                    sample_palette = palette[:8]  # 最初の8色
+                    debug_print(f"[create_qimage] パレットサンプル: {sample_palette}")
+                
                 img = QImage(width, height, QImage.Format_Indexed8)
                 
                 if palette:
                     color_table = []
-                    for r, g, b, a in palette:
-                        color_table.append(QColor(r, g, b, a).rgba())
+                    for i, (r, g, b, a) in enumerate(palette):
+                        rgba_value = QColor(r, g, b, a).rgba()
+                        color_table.append(rgba_value)
+                        if i < 8:  # 最初の8色をログ出力
+                            debug_print(f"[create_qimage] パレット[{i}]: ({r},{g},{b},{a}) -> 0x{rgba_value:08x}")
                     img.setColorTable(color_table)
+                    debug_print(f"[create_qimage] カラーテーブル設定完了: {len(color_table)}色")
+                else:
+                    debug_print(f"[create_qimage] 警告: パレットがありません")
                 
                 stride = img.bytesPerLine()
+                debug_print(f"[create_qimage] 画像stride: {stride}, 幅: {width}")
+                
                 try:
                     ptr = img.bits()
                     ptr.setsize(stride * height)
@@ -5525,14 +5982,18 @@ class SFFViewer(QMainWindow):
                     
                     if stride == width:
                         mv[:width*height] = decoded_data[:width*height]
+                        debug_print(f"[create_qimage] データコピー完了（stride=width）")
                     else:
                         for y in range(height):
                             src_off = y * width
                             dst_off = y * stride
                             mv[dst_off:dst_off+width] = decoded_data[src_off:src_off+width]
+                        debug_print(f"[create_qimage] データコピー完了（stride≠width, {stride}≠{width}）")
+                    
+                    debug_print(f"[create_qimage] QImage作成完了: {img.width()}x{img.height()}")
                     return img
                 except Exception as e:
-                    print(f"[create_qimage] インデックス memoryview失敗、RGBA fallback: {e}")
+                    debug_print(f"[create_qimage] インデックス memoryview失敗、RGBA fallback: {e}")
                     # RGBAフォールバック
                     rgba = bytearray()
                     for i in decoded_data[:width*height]:
@@ -5542,29 +6003,12 @@ class SFFViewer(QMainWindow):
                             r = g = b = 0; a = 0
                         rgba.extend([r, g, b, a])
                     
-                    img_rgba = QImage(width, height, QImage.Format_RGBA8888)
-                    stride_rgba = img_rgba.bytesPerLine()
-                    row_bytes_rgba = width * 4
-                    
-                    try:
-                        ptr_rgba = img_rgba.bits()
-                        ptr_rgba.setsize(stride_rgba * height)
-                        mv_rgba = memoryview(ptr_rgba)
-                        
-                        if stride_rgba == row_bytes_rgba:
-                            mv_rgba[:row_bytes_rgba * height] = rgba[:row_bytes_rgba * height]
-                        else:
-                            for y in range(height):
-                                src_off = y * row_bytes_rgba
-                                dst_off = y * stride_rgba
-                                mv_rgba[dst_off:dst_off+row_bytes_rgba] = rgba[src_off:src_off+row_bytes_rgba]
-                        return img_rgba
-                    except Exception as e2:
-                        print(f"[create_qimage] RGBA fallback失敗: {e2}")
-                        return None
+                    debug_print(f"[create_qimage] RGBAフォールバック完了: {len(rgba)}バイト")
+                    img = QImage(bytes(rgba), width, height, QImage.Format_RGBA8888)
+                    return img
                         
         except Exception as e:
-            print(f"[create_qimage] 全般エラー: {e}")
+            debug_print(f"[create_qimage] 全般エラー: {e}")
             return None
 
     def _direct_render_sprite(self, sprite_idx):
@@ -5580,9 +6024,9 @@ class SFFViewer(QMainWindow):
             return None
         
         # フォーマットに応じた処理
-        if fmt in [0, 1]:  # インデックスカラー
+        if fmt in [0, 1, 2, 3]:  # インデックスカラー（fmt=2,3はRLE圧縮されたインデックスカラー）
             return self._render_indexed_sprite(sprite_idx, sprite, img_data, width, height)
-        elif fmt in [2, 3, 4, 11, 12]:  # 直接色（PNG fmt=10は除外）
+        elif fmt in [4, 11, 12]:  # 直接色（PNG fmt=10は除外）
             return self._render_direct_sprite(sprite_idx, sprite, img_data, width, height, fmt)
         elif fmt == 10:  # PNG形式 - SFFv2では遅延読み込みに委譲
             if self.is_v2:
@@ -5671,22 +6115,7 @@ class SFFViewer(QMainWindow):
         try:
             qimg = QImage(width, height, QImage.Format_ARGB32)
             
-            if fmt == 2:  # 16bit RGB565
-                # 16bitデータの処理
-                for y in range(height):
-                    for x in range(width):
-                        idx = (y * width + x) * 2
-                        if idx + 1 < len(img_data):
-                            # リトルエンディアンで16bit値を構築
-                            pixel16 = img_data[idx] | (img_data[idx + 1] << 8)
-                            r = ((pixel16 >> 11) & 0x1F) << 3
-                            g = ((pixel16 >> 5) & 0x3F) << 2
-                            b = (pixel16 & 0x1F) << 3
-                            qimg.setPixel(x, y, qRgb(r, g, b))
-                        else:
-                            qimg.setPixel(x, y, qRgb(255, 0, 255))  # マゼンタ
-            
-            elif fmt in [10, 11, 12]:  # 32bit RGBA
+            if fmt in [10, 11, 12]:  # 32bit RGBA
                 for y in range(height):
                     for x in range(width):
                         idx = (y * width + x) * 4

@@ -84,6 +84,28 @@ class LanguageManager:
                 'tooltip_spritesheet_anim': '選択中のアニメーションのスプライトシートを出力',
                 'button_all_gif_export': '全GIF出力',
                 'tooltip_all_gif_export': '全アニメーションを個別GIFで出力',
+                
+                # パレット選択状態
+                'palette_selection_enabled': 'パレット選択: 有効',
+                'palette_selection_disabled': 'パレット選択: 無効',
+                'palette_selection_fixed': 'パレット選択: 固定',
+                'palette_selection_disabled_no_file': 'パレット選択: 無効 (ファイル未読み込み)',
+                'palette_selection_disabled_no_sprite': 'パレット選択: 無効 (スプライト未選択)',
+                'palette_selection_disabled_error': 'パレット選択: 無効 (エラー)',
+                'palette_selection_disabled_not_found': 'パレット選択: 無効 (スプライト見つからず)',
+                
+                # 進行状況メッセージ
+                'progress_spritesheet_all': 'SFF全体スプライトシート生成中...',
+                
+                # エラーメッセージ
+                'error_pil_required': 'エラー: PIL/Pillowライブラリが必要です',
+                'error_no_sprite_selected': 'エラー: スプライトが選択されていません',
+                'error_image_failed': 'エラー: 画像の取得に失敗しました',
+                'error_no_sff_loaded': 'エラー: SFFファイルが読み込まれていません',
+                'error_no_sprites_output': 'エラー: 出力するスプライトがありません',
+                'error_gif_frame_conversion': 'GIF出力エラー: フレームの変換に失敗しました',
+                'error_gif_output': 'GIF出力エラー: {error}',
+                'error_general': 'エラー: {error}',
             },
             'en': {
                 'menu_file': 'File',
@@ -140,6 +162,28 @@ class LanguageManager:
                 'tooltip_spritesheet_anim': 'Export sprite sheet of selected animation',
                 'button_all_gif_export': 'Export All GIFs',
                 'tooltip_all_gif_export': 'Export all animations as individual GIFs',
+                
+                # パレット選択状態
+                'palette_selection_enabled': 'Palette Selection: Enabled',
+                'palette_selection_disabled': 'Palette Selection: Disabled',
+                'palette_selection_fixed': 'Palette Selection: Fixed',
+                'palette_selection_disabled_no_file': 'Palette Selection: Disabled (No file loaded)',
+                'palette_selection_disabled_no_sprite': 'Palette Selection: Disabled (No sprite selected)',
+                'palette_selection_disabled_error': 'Palette Selection: Disabled (Error)',
+                'palette_selection_disabled_not_found': 'Palette Selection: Disabled (Sprite not found)',
+                
+                # 進行状況メッセージ
+                'progress_spritesheet_all': 'Generating full SFF sprite sheet...',
+                
+                # エラーメッセージ
+                'error_pil_required': 'Error: PIL/Pillow library is required',
+                'error_no_sprite_selected': 'Error: No sprite selected',
+                'error_image_failed': 'Error: Failed to get image',
+                'error_no_sff_loaded': 'Error: No SFF file loaded',
+                'error_no_sprites_output': 'Error: No sprites to output',
+                'error_gif_frame_conversion': 'GIF export error: Failed to convert frames',
+                'error_gif_output': 'GIF export error: {error}',
+                'error_general': 'Error: {error}',
             }
         }
     
