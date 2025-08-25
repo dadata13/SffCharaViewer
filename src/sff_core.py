@@ -1,424 +1,289 @@
 # -*- coding: utf-8 -*-
 """
-SFFファイルパーサーモジュール
-SFF（Sprite File Format）ファイルの読み込みと処理を行う
-
-- SFF v1 / v2 自動判別
-- v1: サブヘッダ連鎖の正確な走査、リンク(size=0)解決、PCX/PNG読込、パレット継承
-- v2: 既存の sffv2_parser に委譲
+sff_core.py  —  SFF v1/v2 共通読み込みコア
+- 既存(SffCharaViewer等)の import 互換:  from src.sff_core import SFFParser, parse_sff
+- 戻り値互換:  (sprites_dict, palettes_list)
+    sprites_dict[(group, image)] -> SFFSprite
+    palettes_list: [bytes(768), ...]  # 256*3 RGB
 """
 
 from __future__ import annotations
-
 import os
 import io
 import struct
 import logging
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, Tuple, List, Optional
+
+try:
+    # 同一フォルダ内 or package 相対
+    from .sffv2_parser import SFF2, decode_sprite  # type: ignore
+except Exception:
+    from sffv2_parser import SFF2, decode_sprite  # type: ignore
+
+try:
+    from .sff_parser import (
+        analyze_sff_v1,
+        extract_sffv1,
+        convert_pcx_to_image,
+        extract_palette_from_pcx_data,
+        reverse_act_palette,
+    )  # type: ignore
+except Exception:
+    from sff_parser import (
+        analyze_sff_v1,
+        extract_sffv1,
+        convert_pcx_to_image,
+        extract_palette_from_pcx_data,
+        reverse_act_palette,
+    )  # type: ignore
 
 from PIL import Image
 
-__all__ = [
-    "SFFSprite",
-    "SFFParser",
-    "parse_sff",
-    "get_sprite_pil",
-    "get_sprite_rgba",
-]
 
-# ------------------------------------------------------------
-# スプライトコンテナ
-# ------------------------------------------------------------
-
+# ------------------------------
+# Sprite object (互換インターフェース)
+# ------------------------------
 class SFFSprite:
-    """SFFスプライトデータ（共通）"""
     def __init__(
         self,
         group: int,
-        image: int,
-        axis_x: int,
-        axis_y: int,
-        image_data: bytes,
-        *,
-        is_link: bool = False,
-        link_index: int = -1,
-        pal_flag: int = 0,
-        embedded_palette: Optional[bytes] = None,
+        image_no: int,
+        axis_x: int = 0,
+        axis_y: int = 0,
+        pil_img: Optional[Image.Image] = None,
+        raw_indexed: Optional[bytes] = None,
+        palette: Optional[bytes] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
     ):
         self.group = group
-        self.image = image
-        self.axis_x = axis_x
-        self.axis_y = axis_y
-        self.image_data = image_data  # PCX/PNG バイト列想定
-        self.pal_flag = pal_flag      # v1 subheader の palette フラグ
-        self.is_link = is_link
-        self.link_index = link_index
+        self.image = image_no
+        self.x = axis_x
+        self.y = axis_y
+        self._pil = pil_img  # RGBA が望ましい
+        self._raw_indexed = raw_indexed
+        self._palette = palette  # 768 bytes (RGB) or None
+        self.width = width if width is not None else (pil_img.width if pil_img else 0)
+        self.height = height if height is not None else (pil_img.height if pil_img else 0)
 
-        # 解析時に見つかった PCX 末尾の 768B パレット（RGB×256）
-        self.embedded_palette = embedded_palette
+    def get_pil_image(self, palette_data: Optional[bytes] = None) -> Optional[Image.Image]:
+        """
+        互換API: PIL.Image を返す。内部キャッシュがあればそれを返す。
+        palette_data が渡された場合、インデックス画像を再合成してRGBAで返す。
+        """
+        if self._pil is not None:
+            return self._pil
 
-        # キャッシュ
-        self._pil_cache: Optional[Image.Image] = None
+        # インデックス + パレットから再構成（v2のindexed保持などのため）
+        if self._raw_indexed is not None and (palette_data or self._palette):
+            pal = palette_data or self._palette
+            if pal and len(pal) >= 768 and self.width and self.height:
+                img = Image.frombytes("P", (self.width, self.height), self._raw_indexed)
+                img.putpalette(list(pal[:768]))
+                self._pil = img.convert("RGBA")
+                return self._pil
 
-    # --- 表示用ヘルパ ---
-    def get_pil(self, fallback_palette: Optional[bytes] = None) -> Optional[Image.Image]:
-        """PIL Image を返す（PCX/PNG 自動判定・パレット適用）"""
-        if self._pil_cache is not None:
-            return self._pil_cache
-        try:
-            data = self.image_data or b""
-            if not data:
-                return None
-
-            if data.startswith(b"\x89PNG"):
-                img = Image.open(io.BytesIO(data))
-                img.load()
-                self._pil_cache = img.convert("RGBA")
-                return self._pil_cache
-
-            # PCX 想定（Pillow は PCX 読める）
-            img = Image.open(io.BytesIO(data))
-            img.load()
-
-            # PCX は P モードで読み出し → 必要ならパレット適用
-            if img.mode != "P":
-                self._pil_cache = img.convert("RGBA")
-                return self._pil_cache
-
-            # パレット決定（優先順：埋め込み > 引数 > 現在の画像の既存パレット > グレースケール）
-            palette = None
-            if self.embedded_palette and len(self.embedded_palette) >= 768:
-                palette = list(self.embedded_palette[:768])
-            elif fallback_palette and len(fallback_palette) >= 768:
-                palette = list(fallback_palette[:768])
-            else:
-                # Pillow が持っているパレットを使えるならそのまま
-                p = img.getpalette()
-                if p and len(p) >= 768:
-                    palette = p[:768]
-                else:
-                    # 最低限のグレースケール
-                    palette = []
-                    for i in range(256):
-                        palette.extend([i, i, i])
-
-            img = img.convert("P")
-            img.putpalette(palette)
-            self._pil_cache = img.convert("RGBA")
-            return self._pil_cache
-
-        except Exception as e:
-            logging.error(f"Sprite({self.group},{self.image}) PIL化失敗: {e}")
-            return None
+        return None
 
 
-# ------------------------------------------------------------
-# v1 ユーティリティ
-# ------------------------------------------------------------
+# ------------------------------
+# ユーティリティ
+# ------------------------------
+def _is_sff_v2(header: bytes) -> bool:
+    # SFFv2: 先頭に "ElecbyteSFF" を含み、ヘッダ長 0x80、テーブルオフセットが妥当 など
+    try:
+        if len(header) >= 16 and b'Elecbyte' in header[:16] and b'SFF' in header[:16]:
+            # v2ではオフセット類が 0x24 以降にある
+            # 無茶な数値でないか軽くチェック
+            return True
+        return False
+    except Exception:
+        return False
 
-def _extract_pcx_tail_palette(data: bytes) -> Optional[bytes]:
+
+def _is_sff_v1(header: bytes) -> bool:
+    # v1は先頭12バイトに "ElecbyteSpr"（実装/派生で微妙に違うことがある）を含むのが一般的
+    # 黒画面になっていたケースを拾うため、先頭 "Elec" を見たら v1 として扱う
+    if len(header) >= 4 and header[:4] == b'Elec':
+        return True
+    if len(header) >= 12 and b'Elecbyte' in header[:12]:
+        return True
+    return False
+
+
+# ------------------------------
+# v1 読み込み（旧ロジックをそのまま活用）
+# ------------------------------
+def _load_sff_v1(path: str) -> Tuple[Dict[Tuple[int, int], SFFSprite], List[bytes]]:
     """
-    PCX 末尾のパレット（0x0C + 768B）を抽出して返す。
-    """
-    if len(data) >= 769 and data[-769] == 0x0C:
-        return data[-768:]
-    return None
-
-
-def _read_sff_v1(path: str) -> Tuple[Dict[Tuple[int, int], SFFSprite], List[bytes]]:
-    """
-    SFF v1 を読み込む。
-    仕様に基づき、ヘッダ→subfile 連鎖を辿って各 PCX/PNG を抜き出す。
+    sff_parser.py の analyze_sff_v1 / extract_sffv1 を使って
+    旧挙動（正しくパレットを適用）で復元する。
     """
     sprites: Dict[Tuple[int, int], SFFSprite] = {}
-    palettes: List[bytes] = []  # 共有/参照用に 768B RGB を入れておく（index0優先）
+    palettes: List[bytes] = []
 
     if not os.path.isfile(path):
         return sprites, palettes
 
+    # 一時 JSON（解析結果）をメモリに持ちたいので BytesIO を使う実装に変更
+    # ただし sff_parser.analyze_sff_v1 はファイル出力を前提なので小さなテンポラリを使う
+    import tempfile, json
     with open(path, "rb") as f:
-        # 32B ヘッダ
-        # signature(12s), ver(4B), nb_groups(I), nb_images(I),
-        # subfile_offset(I), subheader_size(I), palette_type(I), reserved(I*3)
-        hdr = f.read(32)
-        if len(hdr) < 32:
+        # 解析結果を temp json へ
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
+            analysis_json = tmp.name
+        try:
+            analyze_sff_v1(f, analysis_json)
+        except Exception as e:
+            logging.error(f"SFFv1 analyze error: {e}")
+            os.unlink(analysis_json)
             return sprites, palettes
 
-        sig = hdr[:12]                      # b'ElecbyteSpr'
-        ver1, ver2, ver3, ver4 = hdr[12:16]
-        nb_groups = struct.unpack_from("<I", hdr, 16)[0]
-        nb_images = struct.unpack_from("<I", hdr, 20)[0]
-        first_sub_offset = struct.unpack_from("<I", hdr, 24)[0]
-        subheader_size = struct.unpack_from("<I", hdr, 28)[0]
+    # 画像群を復元
+    image_objects: List[Image.Image] = []
+    image_info_list: List[dict] = []
+    try:
+        with open(path, "rb") as f2:
+            # extract_sffv1 は palettes を引数で受け取り、(9000,0) 等から共有パレットを構築する
+            extract_sffv1(
+                f2,                 # バイナリストリーム
+                analysis_json,      # 上で作成した解析JSON
+                image_objects,      # 出力: PIL画像（Pモード or 既にパレット適用済）
+                image_info_list,    # 出力: 画像メタ
+                act_palette=None,   # ACTは外部から与えられない想定
+                palette_list=palettes
+            )
+    except Exception as e:
+        logging.error(f"SFFv1 extract error: {e}")
+    finally:
+        try:
+            os.unlink(analysis_json)
+        except Exception:
+            pass
 
-        # v1 はサブヘッダ 32B
-        if subheader_size != 32:
-            # 一部派生で違う値のケースもあるが、基本 32
-            subheader_size = 32
+    # マッピング作成
+    for pil_img, info in zip(image_objects, image_info_list):
+        try:
+            group = int(info.get("group_no", 0))
+            image_no = int(info.get("image_no", 0))
+            ax = int(info.get("axisx", 0))
+            ay = int(info.get("axisy", 0))
+        except Exception:
+            group = info.get("group_no", 0)
+            image_no = info.get("image_no", 0)
+            ax = info.get("axisx", 0)
+            ay = info.get("axisy", 0)
 
-        # 連鎖を辿る
-        index = 0
-        offset = first_sub_offset
+        # 可能なら RGBA 化（Viewerでの合成を安定させる）
+        try:
+            pil_rgba = pil_img.convert("RGBA") if pil_img.mode != "RGBA" else pil_img
+        except Exception:
+            pil_rgba = pil_img
 
-        # リンク解決用に subfile 情報を一次保管
-        # （size=0 の時、link_index で参照）
-        sub_infos: List[Dict[str, Any]] = []
+        sp = SFFSprite(group, image_no, ax, ay, pil_img=pil_rgba)
+        sprites[(group, image_no)] = sp
 
-        while offset != 0:
-            f.seek(offset)
-            raw = f.read(subheader_size)
-            if len(raw) < subheader_size:
-                break
+    # palettes は 768 bytes RGB のみ（extract_sffv1 が整備済）
+    return sprites, palettes
 
-            # サブヘッダ構造（32B）
-            # next(I), size(I), ax(h), ay(h), group(h), image(h), link_index(H), palette(B), reserved(??)
-            next_off = struct.unpack_from("<I", raw, 0)[0]
-            size = struct.unpack_from("<I", raw, 4)[0]
-            ax = struct.unpack_from("<h", raw, 8)[0]
-            ay = struct.unpack_from("<h", raw, 10)[0]
-            group = struct.unpack_from("<H", raw, 12)[0]
-            image_no = struct.unpack_from("<H", raw, 14)[0]
-            link_index = struct.unpack_from("<H", raw, 16)[0]
-            pal_flag = raw[18] if len(raw) > 18 else 0
 
-            img_data = b""
-            embedded_pal = None
-            is_link = False
+# ------------------------------
+# v2 読み込み（sffv2_parser.SFF2 を使用）
+# ------------------------------
+def _load_sff_v2(path: str) -> Tuple[Dict[Tuple[int, int], SFFSprite], List[bytes]]:
+    sprites: Dict[Tuple[int, int], SFFSprite] = {}
+    palettes: List[bytes] = []
 
-            if size > 0:
-                # 直後に画像データ
-                f.seek(offset + subheader_size)
-                img_data = f.read(size)
+    s2 = SFF2(os.path.abspath(path))
 
-                # PNG 直判
-                if img_data.startswith(b"\x89PNG"):
-                    pass
-                else:
-                    # PCX 末尾パレット
-                    embedded_pal = _extract_pcx_tail_palette(img_data)
+    # パレットテーブル → 768bytes(RGB) に整形して格納
+    for idx in range(len(s2.palettes)):
+        pal_rgba = s2._get_palette(idx)  # (256,4) RGBA (sffv2_parser 側で整備)
+        # 768bytes(RGB) に落とす（アルファは無視）
+        rgb = bytearray()
+        for r, g, b, a in pal_rgba:
+            rgb += bytes((int(r), int(g), int(b)))
+        palettes.append(bytes(rgb))
+
+    # スプライトの復元
+    for (g, n), rec in s2.sprites.items():
+        w = rec["width"]
+        h = rec["height"]
+        fmt = rec["fmt"]
+        off = rec["file_off"]
+        ln = rec["file_len"]
+        pal_index = rec["pal_index"]
+
+        blob = s2.data[off : off + ln]
+        decoded, mode = decode_sprite(fmt, blob, w, h)
+
+        # インデックスならパレットを当ててRGBA化
+        if mode == "indexed":
+            pal = palettes[pal_index] if 0 <= pal_index < len(palettes) else None
+            if pal and len(decoded) == w * h:
+                img = Image.frombytes("P", (w, h), bytes(decoded))
+                img.putpalette(list(pal[:768]))
+                img = img.convert("RGBA")
+                sp = SFFSprite(g, n, 0, 0, pil_img=img, width=w, height=h)
             else:
-                # リンク
-                is_link = True
-
-            sub_infos.append(
-                dict(
-                    index=index,
-                    offset=offset,
-                    next=next_off,
-                    size=size,
-                    axis_x=ax,
-                    axis_y=ay,
-                    group=group,
-                    image=image_no,
-                    link_index=link_index,
-                    pal_flag=pal_flag,
-                    data=img_data,
-                    embedded_palette=embedded_pal,
-                )
-            )
-
-            index += 1
-            offset = next_off
-
-        # リンク解決（size=0 は link_index の data を使う）
-        for info in sub_infos:
-            if info["size"] == 0:
-                li = info.get("link_index", -1)
-                if 0 <= li < len(sub_infos):
-                    src = sub_infos[li]
-                    # 参照元の画像データ・埋め込みパレットを拝借
-                    info["data"] = src["data"]
-                    info["embedded_palette"] = src.get("embedded_palette", None)
-                else:
-                    # 無効リンク → 空画像にしておく
-                    info["data"] = b""
-                    info["embedded_palette"] = None
-                    logging.warning(
-                        f"SFFv1 link unresolved: idx {info['index']} -> {li}"
-                    )
-
-        # 「直近の有効パレット」を作っておく（パレット継承）
-        last_valid_palette: Optional[bytes] = None
-
-        for info in sub_infos:
-            data = info["data"]
-            group = info["group"]
-            image_no = info["image"]
-            pal_flag = info["pal_flag"]
-
-            # パレット更新（PCX 末尾 or PNG パレットはここでは扱わない）
-            if data and not data.startswith(b"\x89PNG"):
-                pal = info.get("embedded_palette")
-                if pal and len(pal) >= 768:
-                    last_valid_palette = pal
-
-            spr = SFFSprite(
-                group=group,
-                image=image_no,
-                axis_x=info["axis_x"],
-                axis_y=info["axis_y"],
-                image_data=data,
-                is_link=(info["size"] == 0),
-                link_index=info.get("link_index", -1),
-                pal_flag=pal_flag,
-                embedded_palette=info.get("embedded_palette"),
-            )
-
-            sprites[(group, image_no)] = spr
-
-        # 最終的な共有パレットを palettes[0] に入れておく
-        if last_valid_palette is not None:
-            palettes.append(bytes(last_valid_palette))
+                # 失敗時は透明
+                img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+                sp = SFFSprite(g, n, 0, 0, pil_img=img, width=w, height=h)
         else:
-            # 無い場合はグレースケールを 1 本
-            gray = bytearray()
-            for i in range(256):
-                gray += bytes([i, i, i])
-            palettes.append(bytes(gray))
+            # RGBA 直
+            img = Image.frombytes("RGBA", (w, h), bytes(decoded))
+            sp = SFFSprite(g, n, 0, 0, pil_img=img, width=w, height=h)
+
+        sprites[(g, n)] = sp
 
     return sprites, palettes
 
 
-# ------------------------------------------------------------
-# v2 デリゲート
-# ------------------------------------------------------------
-
-def _read_sff_v2(path: str) -> Tuple[Dict[Tuple[int, int], SFFSprite], List[bytes]]:
-    """
-    SFF v2 は sffv2_parser に委譲。戻りを SFFSprite に詰め替える。
-    sffv2_parser.parse_sff は (dict, palettes) を返す前提。
-    """
-    try:
-        from sffv2_parser import parse_sff as parse_sff_v2  # 同梱モジュール
-    except Exception as e:
-        logging.error(f"sffv2_parser の読み込みに失敗: {e}")
-        return {}, []
-
-    sprites_out: Dict[Tuple[int, int], SFFSprite] = {}
-    palettes_out: List[bytes] = []
-
-    try:
-        parsed_sprites, parsed_palettes = parse_sff_v2(path)
-        # parsed_sprites は {(group,image): {'data': bytes, 'x': int, 'y': int, ...}} 想定
-        for (g, i), meta in parsed_sprites.items():
-            data = meta.get("data", b"")
-            ax = meta.get("x", 0)
-            ay = meta.get("y", 0)
-            spr = SFFSprite(
-                group=g,
-                image=i,
-                axis_x=ax,
-                axis_y=ay,
-                image_data=data,
-                is_link=False,
-                link_index=-1,
-                pal_flag=0,
-                embedded_palette=None,
-            )
-            sprites_out[(g, i)] = spr
-
-        # v2 側のパレット（RGBA/PLTE）→ 768B RGB 想定または None
-        for pal in parsed_palettes or []:
-            if pal and len(pal) >= 768:
-                palettes_out.append(bytes(pal[:768]))
-    except Exception as e:
-        logging.error(f"SFF v2 解析中にエラー: {e}")
-        return {}, []
-
-    # パレットが 0 本なら最低 1 本は用意
-    if not palettes_out:
-        gray = bytearray()
-        for v in range(256):
-            gray += bytes([v, v, v])
-        palettes_out.append(bytes(gray))
-
-    return sprites_out, palettes_out
-
-
-# ------------------------------------------------------------
-# 署名判定 & パブリック API
-# ------------------------------------------------------------
-
+# ------------------------------
+# 公開API（既存互換）
+# ------------------------------
 class SFFParser:
-    """SFF v1/v2 統合パーサ"""
+    """既存互換のパーサークラス（静的メソッドのみ）"""
 
     @staticmethod
     def parse_sff(file_path: str) -> Tuple[Dict[Tuple[int, int], SFFSprite], List[bytes]]:
-        """
-        SFF を解析して (sprites, palettes) を返す。
-        sprites: {(group,image): SFFSprite}
-        palettes: [768B RGB, ...]（少なくとも 1 本は入れる）
-        """
-        sprites: Dict[Tuple[int, int], SFFSprite] = {}
-        palettes: List[bytes] = []
-
-        if not os.path.isfile(file_path):
-            logging.error(f"SFF file not found: {file_path}")
-            return sprites, palettes
-
-        try:
-            with open(file_path, "rb") as f:
-                head = f.read(64)  # 署名判定用に少し多めに読む
-        except Exception as e:
-            logging.error(f"SFF 読み込み失敗: {e}")
-            return sprites, palettes
-
-        # 既存の「b'Elec' を Unknown として弾いてしまう」問題を修正
-        # v2 判定：ヘッダ中に 'SFF2' の文字が見える（ElecbyteSFF2）
-        if b"SFF2" in head or b"ElecbyteSFF2" in head:
-            return _read_sff_v2(file_path)
-        else:
-            # それ以外は v1 として読む（ElecbyteSpr ...）
-            return _read_sff_v1(file_path)
+        return parse_sff(file_path)
 
 
 def parse_sff(file_path: str) -> Tuple[Dict[Tuple[int, int], SFFSprite], List[bytes]]:
-    """互換関数（従来API維持）"""
-    return SFFParser.parse_sff(file_path)
-
-
-# ------------------------------------------------------------
-# 画像取り出しヘルパ（SffCharaViewer から使いやすい形）
-# ------------------------------------------------------------
-
-def get_sprite_pil(
-    sprites: Dict[Tuple[int, int], SFFSprite],
-    palettes: List[bytes],
-    group: int,
-    image: int,
-    *,
-    palette_index: int = 0,
-) -> Optional[Image.Image]:
     """
-    指定 (group, image) の PIL.Image を返す（RGBA）。
-    パレットは palettes[palette_index] をフォールバックとして使用。
+    既存互換のトップレベル関数。
+    SffCharaViewer / ステージプレビュー側はこれを呼ぶ前提。
     """
-    spr = sprites.get((group, image))
-    if not spr:
-        return None
+    sprites: Dict[Tuple[int, int], SFFSprite] = {}
+    palettes: List[bytes] = []
 
-    fallback = None
-    if 0 <= palette_index < len(palettes):
-        fallback = palettes[palette_index]
+    if not os.path.isfile(file_path):
+        logging.error(f"SFF file not found: {file_path}")
+        return sprites, palettes
 
-    return spr.get_pil(fallback_palette=fallback)
+    # 先頭で判別し、確実にフォールバック
+    try:
+        with open(file_path, "rb") as f:
+            head = f.read(64)
+    except Exception as e:
+        logging.error(f"Failed to read header: {e}")
+        return sprites, palettes
 
+    try:
+        if _is_sff_v2(head):
+            try:
+                return _load_sff_v2(file_path)
+            except Exception as e:
+                logging.warning(f"SFFv2 parse failed, fallback to v1: {e}")
 
-def get_sprite_rgba(
-    sprites: Dict[Tuple[int, int], SFFSprite],
-    palettes: List[bytes],
-    group: int,
-    image: int,
-    *,
-    palette_index: int = 0,
-) -> Optional[bytes]:
-    """
-    指定 (group, image) の RGBA バイト列（width*height*4）を返す。
-    Qt で QImage(QImage.Format_RGBA8888) に渡す用途など向け。
-    """
-    img = get_sprite_pil(sprites, palettes, group, image, palette_index=palette_index)
-    if img is None:
-        return None
-    if img.mode != "RGBA":
-        img = img.convert("RGBA")
-    return img.tobytes()
+        if _is_sff_v1(head):
+            return _load_sff_v1(file_path)
+
+        # 不明でも v1 側に投げてみる（旧ファイル互換のため）
+        logging.warning("Unknown SFF signature, trying v1 parser as fallback.")
+        return _load_sff_v1(file_path)
+
+    except Exception as e:
+        logging.error(f"SFF parse error: {e}")
+        return sprites, palettes
